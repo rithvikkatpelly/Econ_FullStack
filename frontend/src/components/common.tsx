@@ -29,6 +29,9 @@ export function ErrorNotice({ error }: { error: unknown }) {
       case "agent_busy":
         title = "The agent is busy with other questions";
         break;
+      case "model_quota_exhausted":
+        title = "The AI model is at its usage limit";
+        break;
       case "agent_error":
         title = "The agent couldn't finish this one";
         break;

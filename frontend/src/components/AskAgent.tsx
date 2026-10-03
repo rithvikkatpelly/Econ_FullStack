@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { streamAgent, type AgentEvent, type AgentName, type AgentResult } from "../api/agent";
+import { streamAgent, type AgentEvent, type AgentName, type AgentResult, type PriorTurn } from "../api/agent";
 import { ApiError } from "../api/client";
 import { CURATED_BY_ID } from "../catalog";
 import type { OpenExplorer } from "../explorer";
@@ -28,6 +28,8 @@ interface Turn {
   query: string;
   status: Status;
   events: AgentEvent[];
+  /** The answer as it streams in (report_delta events), until `final`. */
+  draft: string;
   backend?: string;
   result?: AgentResult;
   error?: unknown;
@@ -48,16 +50,23 @@ export function AskAgent({ open }: { open: OpenExplorer }) {
     const q = query.trim();
     if (!q || running) return;
     const id = Date.now();
+    // Completed turns become context for this one (the API keeps the last few).
+    const history: PriorTurn[] = turns.flatMap((t) =>
+      t.result ? [{ query: t.query, answer: t.result.final_report }] : [],
+    );
     const controller = new AbortController();
     abort.current = controller;
     setText("");
-    setTurns((all) => [...all.slice(-(MAX_TURNS - 1)), { id, query: q, status: "running", events: [] }]);
+    setTurns((all) => [...all.slice(-(MAX_TURNS - 1)), { id, query: q, status: "running", events: [], draft: "" }]);
 
     try {
       await streamAgent(
         q,
+        history,
         (event) =>
           update(id, (t) => {
+            // Deltas only grow the draft; they aren't steps in the timeline.
+            if (event.type === "report_delta") return { ...t, draft: t.draft + event.text };
             const next: Turn = { ...t, events: [...t.events, event] };
             if (event.type === "start") next.backend = event.backend;
             if (event.type === "final") return { ...next, status: "done", result: event };
@@ -112,7 +121,11 @@ export function AskAgent({ open }: { open: OpenExplorer }) {
             value={text}
             rows={2}
             maxLength={500}
-            placeholder="e.g. Compare CPI and unemployment since 2019 and explain the relationship"
+            placeholder={
+              turns.length
+                ? "Ask a follow-up — e.g. what about since 2015?"
+                : "e.g. Compare CPI and unemployment since 2019 and explain the relationship"
+            }
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -131,6 +144,14 @@ export function AskAgent({ open }: { open: OpenExplorer }) {
             </button>
           )}
         </form>
+
+        {turns.length > 0 && !running && (
+          <div className="ask-tools">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setTurns([])}>
+              New conversation
+            </button>
+          </div>
+        )}
 
         {turns.length === 0 && (
           <div className="quick">
@@ -157,7 +178,7 @@ function TurnView({ turn, open }: { turn: Turn; open: OpenExplorer }) {
       <p className="turn-q">{turn.query}</p>
 
       {turn.status === "running" ? (
-        <Timeline steps={steps} live />
+        <Timeline steps={steps} live={turn.draft ? "Writing the answer…" : steps.length ? "Working…" : "Planning…"} />
       ) : (
         steps.length > 0 && (
           <details className="disclose turn-steps">
@@ -168,6 +189,12 @@ function TurnView({ turn, open }: { turn: Turn; open: OpenExplorer }) {
             <Timeline steps={steps} />
           </details>
         )
+      )}
+
+      {turn.status === "running" && turn.draft && (
+        <div className="answer answer-draft" aria-busy="true">
+          <Report text={turn.draft} />
+        </div>
       )}
 
       {turn.status === "error" && <ErrorNotice error={turn.error} />}
@@ -190,7 +217,11 @@ function TurnView({ turn, open }: { turn: Turn; open: OpenExplorer }) {
             ))}
             {turn.result.risk_signal && <RiskBadge signal={turn.result.risk_signal} />}
             <span className="mono muted answer-meta">
-              {turn.backend} · {(turn.result.input_tokens + turn.result.output_tokens).toLocaleString()} tokens
+              {turn.backend}
+              {turn.result.input_tokens + turn.result.output_tokens > 0 &&
+                ` · ${(turn.result.input_tokens + turn.result.output_tokens).toLocaleString()} tokens`}
+              {turn.result.data_token_budget > 0 &&
+                ` · data ${turn.result.data_tokens.toLocaleString()}/${turn.result.data_token_budget.toLocaleString()}`}
             </span>
           </div>
         </div>
@@ -199,7 +230,7 @@ function TurnView({ turn, open }: { turn: Turn; open: OpenExplorer }) {
   );
 }
 
-function Timeline({ steps, live }: { steps: AgentEvent[]; live?: boolean }) {
+function Timeline({ steps, live }: { steps: AgentEvent[]; live?: string }) {
   return (
     <ol className="timeline">
       {steps.map((e, i) => (
@@ -211,7 +242,7 @@ function Timeline({ steps, live }: { steps: AgentEvent[]; live?: boolean }) {
       {live && (
         <li className="tl tl-live">
           <i aria-hidden="true" />
-          <div className="muted">{steps.length ? "Working…" : "Planning…"}</div>
+          <div className="muted">{live}</div>
         </li>
       )}
     </ol>
@@ -234,6 +265,20 @@ function describe(e: AgentEvent): ReactNode {
           <span className="mono muted tl-ms"> {Math.round(e.latency_ms)} ms</span>
           {!e.ok && <span className="tl-err"> {e.error?.replace(/_/g, " ")}</span>}
         </>
+      );
+    case "waiting":
+      return (
+        <span className="muted">
+          Waiting {e.seconds} s for the model's rate limit, then continuing{" "}
+          <span className="mono">({AGENTS[e.agent]?.label ?? e.agent})</span>
+        </span>
+      );
+    case "fallback":
+      return (
+        <span className="muted">
+          <span className="mono">{e.from_model}</span> is overloaded — switched to{" "}
+          <span className="mono">{e.to_model}</span>
+        </span>
       );
     case "agent_output":
       return (

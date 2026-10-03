@@ -1475,6 +1475,11 @@ th {
   border-color: var(--lime);
   outline: none;
 }
+.ask-tools {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
 .turns {
   list-style: none;
   margin: 0 0 22px;
@@ -1549,6 +1554,11 @@ th {
 .tl-bad > i {
   border-color: var(--bad);
 }
+.tl-fallback > i,
+.tl-waiting > i {
+  border-color: var(--warn);
+  border-style: dashed;
+}
 .tl-agent_output > i {
   border-color: var(--ink-soft);
 }
@@ -1584,6 +1594,27 @@ th {
   padding: 4px 0 4px 18px;
   display: grid;
   gap: 14px;
+}
+.answer-draft {
+  border-left-color: var(--line);
+}
+/* Typing cursor after the last word of the streaming draft. */
+.answer-draft .report > div:last-child > p:last-child::after,
+.answer-draft .report > div:last-child > h4:last-child::after,
+.answer-draft .report > div:last-child > ul:last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 1.05em;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  background: var(--lime);
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
 }
 .report {
   display: grid;

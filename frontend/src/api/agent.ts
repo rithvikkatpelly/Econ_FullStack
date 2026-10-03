@@ -11,7 +11,7 @@ interface Timed {
 }
 
 export type AgentEvent =
-  | ({ type: "start"; query: string; backend: string } & Timed)
+  | ({ type: "start"; query: string; backend: string; follow_up: boolean } & Timed)
   | ({ type: "delegation"; agent: AgentName; task: string } & Timed)
   | ({
       type: "tool_call";
@@ -23,6 +23,9 @@ export type AgentEvent =
       latency_ms: number;
     } & Timed)
   | ({ type: "agent_output"; agent: AgentName; output: string } & Timed)
+  | ({ type: "report_delta"; agent: AgentName; text: string } & Timed)
+  | ({ type: "waiting"; agent: AgentName; reason: string; seconds: number } & Timed)
+  | ({ type: "fallback"; agent: AgentName; reason: string; from_model: string; to_model: string } & Timed)
   | ({ type: "final"; backend: string } & AgentResult & Timed)
   | ({ type: "error" } & ApiErrorBody & Timed);
 
@@ -33,6 +36,9 @@ export interface AgentResult {
   input_tokens: number;
   output_tokens: number;
   elapsed_ms: number;
+  /** Tool-data tokens this run pulled, against its own per-run budget. */
+  data_tokens: number;
+  data_token_budget: number;
 }
 
 /** Split an SSE buffer into complete `data:` payloads; returns the parsed
@@ -59,15 +65,25 @@ export function parseFrames(buffer: string): { events: AgentEvent[]; rest: strin
  * Rejects with `ApiError` if the run is refused up front (rate limit, busy,
  * bad input); a run that fails midway arrives as an `error` event instead.
  */
+/** An earlier question/answer pair, sent back so a follow-up can refer to it. */
+export interface PriorTurn {
+  query: string;
+  answer: string;
+}
+
+/** The API accepts at most this many earlier turns (agents/conversation.py). */
+export const MAX_HISTORY = 3;
+
 export async function streamAgent(
   query: string,
+  history: PriorTurn[],
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/agent/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, history: history.slice(-MAX_HISTORY) }),
     signal,
   });
 
