@@ -23,6 +23,15 @@ export function ErrorNotice({ error }: { error: unknown }) {
         title = "The demo's data allowance is used up";
         hint = "Try a shorter date range, or come back a little later.";
         break;
+      case "rate_limited":
+        title = "You're asking faster than the demo allows";
+        break;
+      case "agent_busy":
+        title = "The agent is busy with other questions";
+        break;
+      case "agent_error":
+        title = "The agent couldn't finish this one";
+        break;
       case "fred_api_error":
         title = "The data provider had a problem";
         hint = "This is usually temporary — try again in a moment.";

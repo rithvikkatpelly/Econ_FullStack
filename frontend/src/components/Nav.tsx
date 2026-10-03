@@ -34,6 +34,7 @@ export function Nav({ api }: { api: ApiState }) {
         <Logo />
         <nav aria-label="Primary" className="nav-links">
           <a href="#top">Home</a>
+          <a href="#ask">Ask</a>
           <a href="#explore">Explore</a>
           <a href="#how">How it works</a>
           <a href={`${API_BASE_URL}/docs`} target="_blank" rel="noreferrer">

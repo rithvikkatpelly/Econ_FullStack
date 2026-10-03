@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE_URL } from "./api/client";
+import { AskAgent } from "./components/AskAgent";
 import { Comparisons } from "./components/Comparisons";
 import { CtaBanner } from "./components/CtaBanner";
 import { Explorer } from "./components/Explorer";
@@ -49,6 +50,7 @@ export default function App() {
       <main>
         <Hero items={items} loading={loading} open={open} />
         <div className="container">
+          <AskAgent open={open} />
           <Comparisons items={items} loading={loading} open={open} />
           <Explorer request={request} open={open} />
         </div>
