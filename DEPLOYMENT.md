@@ -115,6 +115,13 @@ through Vertex AI as the runtime service account — step 5 — so there is no
 model key to store. `NEWS_API_KEY` and `ANTHROPIC_API_KEY` in `.env.example`
 are for local use only and never need to exist in GCP.)
 
+> **Don't deploy on a free-tier Gemini API key.** The free tier allows about
+> **5 requests per minute and 20 per day per model**, and one agent question
+> is ~10 model calls. The agents survive it — they wait out per-minute limits
+> and fall back across `GEMINI_FALLBACK_MODELS` — but a question takes
+> minutes and the day's allowance is a handful of questions. Vertex AI
+> (below, the default) or a billing-enabled API key avoids this.
+
 **Optional — Gemini API key instead of Vertex AI.** If you'd rather bill
 through a Gemini API key (https://aistudio.google.com/apikey):
 
@@ -316,6 +323,36 @@ project before sharing the URL widely.
 
 ---
 
+## 9b. Optional: weekly live Gemini eval
+
+`.github/workflows/live-eval.yml` runs the eval suite against real Gemini
+every Monday and on demand. It's off until you opt in:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LIVE_EVAL_ENABLED` | *(unset → skipped)* | `true` to turn it on |
+| `LIVE_EVAL_MAX_CASES` | `8` | spend cap — cases per run (injection probes always kept) |
+| `LIVE_EVAL_MIN_PASS_RATE` | `0.75` | the job fails below this pass rate |
+
+Auth works one of two ways:
+
+- **A Gemini API key:** add a `GEMINI_API_KEY` repository **secret**. The
+  job uses it and skips Google Cloud auth.
+- **Vertex AI:** no secret needed. The job logs in through the same Workload
+  Identity Federation as the deploy (step 6), so the *deployer* service
+  account also needs Vertex AI access:
+
+```bash
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:github-deployer@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+```
+
+FRED stays on the offline fixture, so the only cost is the model calls:
+roughly 5–7 Gemini Flash requests per case.
+
+---
+
 ## 10. Cost control and cleanup
 
 - Both services deploy with `--min-instances=0` (scale to zero) — no charge
@@ -364,6 +401,15 @@ gcloud secrets delete gemini-api-key --quiet   # only if you created it
   isn't available in `VERTEX_LOCATION` — `global` has the widest coverage.
   `GET /health` shows `agent_backend` and `agent_model_configured` for a
   quick check.
+- **Questions take minutes, and the timeline shows "Waiting N s for the
+  model's rate limit"** — the key is on a low quota tier (the Gemini API free
+  tier is ~5 requests/min/model). The agents are doing the right thing
+  (waiting as long as Google asks); the fix is quota — enable billing on the
+  key's project or use Vertex AI.
+- **`/agent/stream` ends with `model_quota_exhausted`** — every model in
+  `GEMINI_MODEL` + `GEMINI_FALLBACK_MODELS` is out of quota (often the
+  free tier's per-day limit). Add billing, or add another model to
+  `GEMINI_FALLBACK_MODELS`.
 - **The activity timeline appears all at once instead of step by step** —
   something between the browser and the API is buffering the response. The
   API sends `Cache-Control: no-cache` and `X-Accel-Buffering: no`; Cloud Run
@@ -391,10 +437,12 @@ Docker build context (`.dockerignore`).
 | `CORS_ALLOWED_ORIGINS` | **yes** | Must list the deployed frontend's exact origin. The workflow sets this automatically after the frontend deploys (step 8.4); comma-separated, no trailing slash, if you ever add a second allowed origin by hand. |
 | `AGENT_BACKEND` | set by the workflow | `gemini` in production. `stub` (the default) runs the deterministic offline planner — no model calls. |
 | `GEMINI_MODEL` | optional | Defaults to `gemini-3.8-flash`. |
+| `GEMINI_FALLBACK_MODELS` | optional | Defaults to `gemini-3.6-flash,gemini-3.5-flash` — used when the current model is overloaded or out of quota. |
 | `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | set by the workflow | Route Gemini calls through Vertex AI as the runtime service account. Omitted when `GEMINI_API_KEY` is used instead. |
 | `GEMINI_API_KEY` | only without Vertex AI | Via Secret Manager, like `FRED_API_KEY`. |
 | `AGENT_RATE_LIMIT_PER_MIN`, `AGENT_RATE_LIMIT_BURST`, `AGENT_MAX_CONCURRENT_RUNS`, `AGENT_MAX_QUERY_CHARS` | optional | Agent-endpoint spend guards; defaults 6, 3, 2, 500. Rate-limit buckets and the run cap are per instance. |
-| `SESSION_TOKEN_BUDGET` | optional | Defaults to 50000. This is a **per-process** budget today (module-level singleton in `cost_tracker.py`), not per-user — see "Known gaps" below. |
+| `AGENT_RUN_TOKEN_BUDGET` | optional | Defaults to 30000. Tool-data tokens one agent question may pull — each run has its own budget, separate from `SESSION_TOKEN_BUDGET`. |
+| `SESSION_TOKEN_BUDGET` | optional | Defaults to 50000. The budget the **tool endpoints** share, per process (module-level singleton in `cost_tracker.py`) — see "Known gaps" below. Agent questions don't spend from it. |
 | `AUDIT_LOG_PATH` | already set | `backend/Dockerfile` sets this to `/tmp/audit.log`. The container runs as a non-root `appuser` (see the Dockerfile), which can't create a new file under `/app/backend` (owned by root); `/tmp` is always writable. Audit logging is designed to fail open on a write error (`audit_log.py`), so this isn't fatal either way — it just silently stops logging if pointed somewhere unwritable. Cloud Run's filesystem (including `/tmp`) is ephemeral regardless — it doesn't survive a restart or scale-to-zero, so treat this as debug-tail-the-logs, not a durable audit trail, until it's shipped somewhere external. |
 
 `CACHE_PATH` is left at `:memory:` — the FRED cache is per-process and resets
@@ -422,10 +470,11 @@ want the cache to survive restarts.
   allowance is used up" and the rest of the page keeps working). Per-client
   budgets, or a server-side snapshot endpoint that doesn't bill the session,
   are the real fix.
-- **The token budget is process-global.** One busy client can exhaust it for
-  everyone until the process restarts. For multi-user hosting, key the
-  budget by session/API-key instead of the module-level singleton (there's a
-  `# TODO`-style note to this effect already in `cost_tracker.py`).
+- **The tool endpoints' token budget is process-global.** One busy client can
+  exhaust `SESSION_TOKEN_BUDGET` for every other *tool-endpoint* caller until
+  the process restarts. Agent questions are already isolated (each runs under
+  its own `cost_tracker.run_budget`); the same mechanism, keyed per client,
+  is the fix for the tool endpoints.
 - **`FRED_API_KEY` in error text.** `audit_log.py` already redacts it; spot-
   check that a forced upstream error (e.g. an invalid key) doesn't echo the
   key in a 502 body before going public.

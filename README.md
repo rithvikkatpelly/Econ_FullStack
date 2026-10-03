@@ -524,6 +524,20 @@ Vertex AI access, costs money). The
 generated [`evals/REPORT.md`](evals/REPORT.md) has the per-case table and a
 projected API cost.
 
+**Live model eval.** [`.github/workflows/live-eval.yml`](.github/workflows/live-eval.yml)
+runs the same suite against real Gemini every Monday (and on demand). It's
+opt-in (`LIVE_EVAL_ENABLED=true`) and capped: FRED stays on the fixture, so
+only model calls are billed, and `--max-cases` (default 8) bounds the run
+while always keeping the injection probes. A live model won't be perfect, so
+the gate is a pass rate (`--min-pass-rate`, default 0.75) rather than "every
+case". One case hitting a provider error is recorded as 💥 and the rest still
+run. The report goes to the job summary and an artifact, never over the
+committed stub snapshot:
+
+```bash
+AGENT_BACKEND=gemini python -m evals --max-cases 8 --min-pass-rate 0.75 --out evals/REPORT.live.md
+```
+
 #### Orchestrator routing eval
 
 A second, narrower suite ([`tests/eval_cases.py`](tests/eval_cases.py) +
@@ -716,12 +730,15 @@ curl -N -X POST http://127.0.0.1:8000/agent/stream \
 ```
 
 ```
-data: {"type": "start", "query": "Compare CPI and unemployment since 2019 …", "backend": "gemini"}
+data: {"type": "start", "query": "Compare CPI and unemployment since 2019 …", "backend": "gemini", "follow_up": false}
 data: {"type": "delegation", "agent": "economic_data_agent", "task": "…"}
 data: {"type": "tool_call", "agent": "economic_data_agent", "tool": "compare_series", "arguments": {…}, "ok": true, "latency_ms": 412.0}
 data: {"type": "agent_output", "agent": "economic_data_agent", "output": "Data fetched: …"}
 …
-data: {"type": "final", "final_report": "…", "series_used": ["CPIAUCSL", "UNRATE"], "risk_signal": "easing", …}
+data: {"type": "report_delta", "agent": "report_agent", "text": "Inflation cooled while "}
+data: {"type": "report_delta", "agent": "report_agent", "text": "unemployment stayed low…"}
+…
+data: {"type": "final", "final_report": "…", "series_used": ["CPIAUCSL", "UNRATE"], "risk_signal": "easing", "data_tokens": 2030, "data_token_budget": 30000, …}
 ```
 
 Design choices worth calling out:
@@ -741,6 +758,48 @@ Design choices worth calling out:
   errors can echo request details); the operator gets it in the log.
 - **Disconnects don't leak slots.** A run's slot is released when the run
   actually ends, not when the socket closes.
+- **The answer streams as it's written.** The Report Agent's turn uses
+  Gemini's `generate_content_stream`, and each text chunk goes out as a
+  `report_delta` event. `Model.stream_turn` falls back to one delta for
+  backends without native streaming (the stub, Claude), so the UI has a
+  single code path. Thought summaries never reach the stream, and the
+  chunks are reassembled into a normal turn afterwards, so the trace, the
+  evals and thought-signature replay are unaffected.
+- **Every question gets its own token budget.** Tool data is metered per run
+  (`cost_tracker.run_budget`, a `ContextVar` that follows the run into worker
+  threads), 30k tokens by default (`AGENT_RUN_TOKEN_BUDGET`). Concurrent
+  questions can't drain each other, and the landing page's tool calls, which
+  spend the shared `SESSION_TOKEN_BUDGET`, can't starve the agent. The
+  `final` event reports `data_tokens` against the run's budget.
+- **Built for Gemini's real failure modes** — all four found on the first
+  live runs, not guessed:
+  - **Transient 503s.** The SDK never retries by default, and the newest
+    models answer *"currently experiencing high demand"*. Every call now
+    retries 408/5xx with backoff.
+  - **Quota limits (429).** A 429 carries Google's own `retryDelay`
+    (~60 s on a per-minute quota). The model waits exactly that long and
+    shows "Waiting 43 s for the model's rate limit" in the timeline. A
+    per-day quota fails fast instead of waiting hours.
+  - **Fallback models.** A model that stays overloaded, or is out of quota
+    (quotas are per model), fails over down `GEMINI_FALLBACK_MODELS`. A
+    circuit breaker makes later agents start on the fallback. It never
+    switches models mid-loop, because Gemini 3 thought signatures don't
+    transfer between models.
+  - **Today's date.** Every agent is told today's date. Asked for "the last
+    5 years" in October 2026, Gemini had fetched 2019–2024.
+- **One supervisor call saved per question.** Once the Report Agent answers,
+  the run ends. The supervisor used to spend a model call retyping the
+  report, and live Gemini sometimes re-delegated to the Report Agent instead.
+- **Follow-up questions.** The request can carry up to three earlier turns
+  (`history: [{query, answer}]`). They reach the supervisor wrapped as
+  untrusted data, the same treatment as FRED notes, with each earlier answer
+  clipped, ahead of `Current question: …`
+  ([`agents/conversation.py`](src/agents/conversation.py)). "What about since
+  2015?" after a CPI-vs-unemployment question re-runs that comparison from
+  2015. A forged history can't smuggle in a new current question, because
+  JSON-encoding the block escapes the separator.
+
+![Ask the agent — the answer streaming in, token by token](docs/images/ui-agent-streaming.png)
 
 ![Ask the agent — completed run with the activity timeline expanded](docs/images/ui-agent.png)
 
@@ -754,8 +813,10 @@ over HTTP. It turns the four tools into something a non-developer can use:
 - **Ask the agent** — type a question (or pick an example) and watch the
   supervisor hand work to each specialist, every FRED call with its
   arguments and latency, then a grounded answer whose series chips open the
-  chart explorer. The timeline collapses to "11 steps · 3.2 s" when done;
-  *Stop* aborts the stream.
+  chart explorer. The answer types itself out as Gemini writes it; the
+  timeline collapses to "11 steps · 3.2 s" when done; *Stop* aborts the
+  stream. Ask a follow-up ("what about since 2015?") and the earlier turns
+  go along as context; *New conversation* clears them.
 - **Hero carousel** of seven headline indicators (unemployment, CPI, core CPI,
   core PCE, fed funds, 10-year yield, GDP), each with a sparkline, the latest
   reading and its change. Click the centre card to chart it; `←`/`→` browse.
@@ -858,6 +919,10 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 | `AGENT_BACKEND` | `stub` | `gemini` or `anthropic` for the real model loop |
 | `GEMINI_API_KEY` | — | Gemini API key, when `AGENT_BACKEND=gemini` without Vertex AI |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | model for the Gemini backend |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.6-flash,gemini-3.5-flash` | tried in order when the current model is overloaded (503) or out of quota |
+| `GEMINI_RETRY_ATTEMPTS` | `4` | attempts per call on transient 408/5xx, with exponential backoff |
+| `GEMINI_MAX_QUOTA_WAIT_S` / `GEMINI_QUOTA_RETRIES` | `75` / `3` | on a 429, wait as long as Google's `retryDelay` says (up to the cap), this many times |
+| `GEMINI_OVERLOAD_COOLDOWN_S` | `120` | how long a failed-over model is skipped (longer if Google says so) |
 | `GOOGLE_GENAI_USE_VERTEXAI` | — | `true` to call Gemini via Vertex AI (with `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`) |
 | `ANTHROPIC_API_KEY` | — | required when `AGENT_BACKEND=anthropic` |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | model for the live backend |
@@ -870,6 +935,7 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 | `AGENT_RATE_LIMIT_PER_MIN` / `_BURST` | `6` / `3` | per-client limit on `/agent/*` |
 | `AGENT_MAX_CONCURRENT_RUNS` | `2` | concurrent agent runs per API process |
 | `AGENT_MAX_QUERY_CHARS` | `500` | longest accepted question |
+| `AGENT_RUN_TOKEN_BUDGET` | `30000` | tool-data tokens one agent question may pull (its own budget) |
 | `CORS_ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | comma-separated browser origins allowed to call `backend/app` |
 
 ---
@@ -911,7 +977,8 @@ src/
     base.py            the tool-use loop for the older supervisor pipeline below
     supervisor.py      decomposes the question, delegates to specialists
     specialists.py     the four specialist agents and their tool surfaces
-    model.py           GeminiModel (Gemini/Vertex AI) + AnthropicModel (Claude) + StubModel (offline)
+    model.py           GeminiModel (Gemini/Vertex AI, streaming) + AnthropicModel (Claude) + StubModel (offline)
+    conversation.py    follow-up history: compose/split the wrapped, bounded earlier-turns block
     stub.py            the deterministic offline planner
     trace.py           per-run execution trace — what the evals read, and the progress-event source
 evals/
@@ -926,7 +993,7 @@ examples/
   bench_parallel.py  sequential vs. parallel Data Agent latency, real numbers
   measure.py         regenerates docs/measurements.md from the offline fixture
 tests/  catalog, fred + news clients, security (incl. news injection), rate limit, audit,
-        both agent pipelines, Gemini backend, routing eval, HTTP + agent API, evals — 150 tests, hermetic, ~2s
+        both agent pipelines, Gemini backend, routing eval, HTTP + agent API, evals — 201 tests, hermetic, ~2s
 docs/
   architecture.md   diagrams + the guardrail-by-layer table
   measurements.md   generated context/cost numbers
@@ -937,7 +1004,7 @@ docs/
 ## Testing
 
 ```bash
-pytest -q          # 150 tests, no network, deterministic, ~2s
+pytest -q          # 201 tests, no network, deterministic, ~2s
 ruff check .       # lint (config in pyproject.toml)
 python -m evals    # the eval suite is also a test (test_evals.py runs it)
 ```
@@ -945,7 +1012,8 @@ python -m evals    # the eval suite is also a test (test_evals.py runs it)
 `tests/conftest.py` forces offline FRED, the stub backend, a temp audit-log
 path, and resets the module-level singletons (cache, audit ring, rate-limiter
 buckets, cost budget) between tests. The Gemini backend is tested the same
-way: `test_gemini_model.py` and `test_agent_api.py` drive it with a fake
+way: `test_gemini_model.py` and `test_agent_api.py` drive it, streaming
+included, with a fake
 client returning real `google.genai` response objects, so the request/response
 translation, thought-signature replay, and SSE stream are all covered with no
 network or key. CI ([.github/workflows/ci.yml](.github/workflows/ci.yml))

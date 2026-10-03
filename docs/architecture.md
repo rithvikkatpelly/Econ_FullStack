@@ -40,9 +40,10 @@ drifting.
 ```
 Browser ── React (Cloud Run, nginx)
    │  POST /agent/stream            ▲ text/event-stream: start · delegation ·
-   ▼                                │   tool_call · agent_output · final|error
+   │  {query, history≤3}            │   tool_call · agent_output · report_delta ·
+   ▼                                │   final|error
 FastAPI (Cloud Run) ─ backend/app/agent.py
-   │  rate limit → run slot → Supervisor in a worker thread
+   │  rate limit → run slot → run_budget → Supervisor in a worker thread
    │  Trace(listener=push) ──────────┘   (events only — never tool results)
    ▼
 agents/ (supervisor + 4 specialists) ── GeminiModel ──▶ Vertex AI (Gemini)

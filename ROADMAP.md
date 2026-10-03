@@ -61,16 +61,37 @@ reads as a development story rather than one drop.
       couldn't import `evals`), and the deploy job skips instead of failing
       until GCP is configured
 
+- [x] **Per-run token budget** — `cost_tracker.run_budget` (a ContextVar
+      that follows the run into worker threads); each `/agent/*` question
+      gets its own, so concurrent runs and the landing page can't starve each
+      other. Shared-budget check-and-record made atomic.
+- [x] **Streamed answers** — `Model.stream_turn`; Gemini's
+      `generate_content_stream` for the Report Agent, emitted as
+      `report_delta` events and typed out in the UI
+- [x] **Follow-up questions** — up to 3 earlier turns sent as wrapped,
+      bounded context (`agents/conversation.py`); the stub resolves "what
+      about since 2015?" by inheriting the earlier turn's series
+- [x] **Live Gemini eval in CI** — weekly + on demand, opt-in, case-capped
+      (probes always kept), pass-rate gate, per-case error isolation
+
+- [x] **First live Gemini runs** — found and fixed: no SDK retries on
+      transient 503s; 429s now wait Google's `retryDelay` (shown in the UI)
+      and per-day quotas fail fast; model fallback + circuit breaker on
+      overload/quota; agents now told today's date ("last 5 years" was
+      2019-2024 in 2026); supervisor stops once the report exists (it was
+      retyping it, or re-delegating)
+
 ### Next
 
-- [ ] Live Gemini eval run in CI (gated, on a schedule, with a spend cap) —
-      `AGENT_BACKEND=gemini python -m evals` against a Vertex AI project
-- [ ] Per-run token budget (contextvar) so concurrent `/agent/*` runs can't
-      drain each other through the process-global `SESSION_TOKEN_BUDGET`
+- [ ] Mid-loop model fallback: today a quota/overload hit after an agent's
+      first tool turn fails the run (thought signatures don't transfer);
+      restarting just that agent on the fallback model would recover it
+- [ ] Inherit the earlier *period* in follow-ups on the stub, not just the
+      series ("and core CPI?" should keep the last date range)
+- [ ] Turn the live eval's first results into dataset cases where Gemini and
+      the expected tool sequence disagree for a defensible reason
 - [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
 - [ ] Export `Trace` events as OpenTelemetry spans to Cloud Trace
-- [ ] Multi-turn follow-ups in "Ask the agent" (pass prior turns as context)
-- [ ] Stream the report text token-by-token (Gemini `generate_content_stream`)
 
 - [ ] Wire `FetchRequest.search_text` through the Data Agent (act on the
       "route via search_series" routing decision, don't just record it)
@@ -83,7 +104,6 @@ reads as a development story rather than one drop.
       `c[key]`, iteration). Per-entry expiry; `:memory:` by default,
       `CACHE_PATH` to persist across restarts.
 - [ ] Expand the supervisor eval dataset toward 50 cases; add adversarial queries
-- [ ] Live-backend eval run in CI (gated, on a schedule, with a spend cap)
 - [ ] Deploy the MCP server over HTTP with per-session rate-limit keys
 - [ ] Observability: structured spans per agent, exported to a trace viewer
 - [ ] A short screen recording in the README
