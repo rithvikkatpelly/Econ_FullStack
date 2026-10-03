@@ -191,13 +191,13 @@ gcloud iam workload-identity-pools providers create-oidc "github-provider" \
   --workload-identity-pool="github-pool" \
   --display-name="GitHub provider" \
   --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --attribute-condition="assertion.repository=='rithvikkatpelly/MCP-Financial-Agent'" \
+  --attribute-condition="assertion.repository=='rithvikkatpelly/Econ_FullStack'" \
   --issuer-uri="https://token.actions.githubusercontent.com"
 
 gcloud iam service-accounts add-iam-policy-binding \
   "github-deployer@${PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/iam.workloadIdentityUser" \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/rithvikkatpelly/MCP-Financial-Agent"
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/rithvikkatpelly/Econ_FullStack"
 ```
 
 Get the provider's full resource name — needed for the GitHub secret next:
@@ -371,7 +371,7 @@ gcloud secrets delete gemini-api-key --quiet   # only if you created it
   disabled for `text/event-stream`.
 - **GitHub Actions auth step fails with "audience" or "no matching
   provider" errors** — the `--attribute-condition` in step 6 pins the
-  provider to exactly `rithvikkatpelly/MCP-Financial-Agent`; a fork or a
+  provider to exactly `rithvikkatpelly/Econ_FullStack`; a fork or a
   renamed repo needs that value (and the workload-identity-pools binding's
   `member=principalSet://...attribute.repository/...`) updated to match.
 

@@ -43,4 +43,4 @@ export const TOPIC_ROWS: string[][] = [
   ["cost of living", "economic growth", "borrowing", "the yield curve", "labor market", "monetary policy", "rate hikes"],
 ];
 
-export const REPO_URL = "https://github.com/rithvikkatpelly/MCP-Financial-Agent";
+export const REPO_URL = "https://github.com/rithvikkatpelly/Econ_FullStack";

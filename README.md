@@ -608,7 +608,7 @@ flaky and never spend money.
   "mcpServers": {
     "econ-data": {
       "command": "python",
-      "args": ["/absolute/path/to/mcp-financial-agent/src/server.py"]
+      "args": ["/absolute/path/to/Econ_FullStack/src/server.py"]
     }
   }
 }
