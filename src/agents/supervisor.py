@@ -67,6 +67,7 @@ class Supervisor:
         self.trace.record_delegation(target, task)
         agent = specialists.build(target, self.trace)
         output = agent.run(task)
+        self.trace.record_agent_output(target, output)
 
         if target == "risk_agent":
             self.trace.risk_signal = _parse_risk_signal(output)
