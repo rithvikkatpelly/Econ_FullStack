@@ -43,8 +43,8 @@ def aggregate(suite: Suite) -> dict:
 
 
 def _case_row(r: CaseResult) -> str:
-    mark = "✅" if r.passed else "❌"
-    tools = " → ".join(r.leaf_tools) or "—"
+    mark = "✅" if r.passed else ("💥" if r.error else "❌")
+    tools = " → ".join(r.leaf_tools) or (f"error: {r.error}" if r.error else "—")
     return (
         f"| {mark} | `{r.id}` | {tools} | "
         f"{','.join(r.series_used) or '—'} | {r.risk_signal or '—'} | "
@@ -77,9 +77,7 @@ Performance (this run): mean wall time **{agg['mean_latency_ms']:.0f} ms/query**
 projected cost at `claude-opus-5` list prices **${agg['projected_total_cost_usd']:.4f}**
 for the whole suite.
 
-> The `stub` backend uses a deterministic offline planner, so its scores are a
-> regression fence on tool-contract and orchestration logic, not a measure of
-> model quality. Run `AGENT_BACKEND=gemini python -m evals` (or `anthropic`) for that.
+{_backend_note(agg['backend'])}
 
 ## Per-case results
 
@@ -87,6 +85,20 @@ for the whole suite.
 |---|---|---|---|---|---|---|
 {case_lines}
 """
+
+
+def _backend_note(backend: str) -> str:
+    if backend == "stub":
+        return (
+            "> The `stub` backend uses a deterministic offline planner, so its scores are a\n"
+            "> regression fence on tool-contract and orchestration logic, not a measure of\n"
+            "> model quality. Run `AGENT_BACKEND=gemini python -m evals` (or `anthropic`) for that."
+        )
+    return (
+        f"> Live `{backend}` run against the offline FRED fixture: these scores measure the\n"
+        "> model's tool selection, grounding and injection resistance. Token counts are the\n"
+        "> provider's; the cost line is modelled at the rates above, not the provider's bill."
+    )
 
 
 def print_summary(suite: Suite) -> None:

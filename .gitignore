@@ -26,3 +26,4 @@ frontend/.env
 # OS/editor cruft
 .DS_Store
 .vscode/
+evals/REPORT.live.md

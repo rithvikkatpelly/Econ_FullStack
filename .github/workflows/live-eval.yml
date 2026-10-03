@@ -1,0 +1,92 @@
+name: Live Gemini eval
+
+# The stub-backend evals in ci.yml are a regression fence on orchestration
+# code. This runs the same suite against real Gemini, which is what measures
+# whether the *model* picks the right tools, grounds its answer, and resists
+# the injection probes.
+#
+# Opt-in and capped, because it costs money:
+#   - skipped unless the repo variable LIVE_EVAL_ENABLED is "true";
+#   - FRED stays on the offline fixture, so only model calls are billed;
+#   - at most LIVE_EVAL_MAX_CASES cases (default 8; injection probes always
+#     included), roughly 5-7 Gemini calls each.
+#
+# Auth: a GEMINI_API_KEY secret if set, otherwise Vertex AI through the same
+# Workload Identity Federation login deploy.yml uses (the deployer service
+# account then also needs roles/aiplatform.user — see DEPLOYMENT.md).
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Mondays 14:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_cases:
+        description: "Cases to run (spend cap)"
+        required: false
+        default: "8"
+
+permissions:
+  contents: read
+  id-token: write # for Workload Identity Federation (Vertex AI path)
+
+concurrency:
+  group: live-eval
+  cancel-in-progress: false
+
+jobs:
+  live-eval:
+    if: ${{ vars.LIVE_EVAL_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AGENT_BACKEND: gemini
+      FRED_OFFLINE: "1"
+      NEWS_OFFLINE: "1"
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
+      EVAL_MAX_CASES: ${{ inputs.max_cases || vars.LIVE_EVAL_MAX_CASES || '8' }}
+      EVAL_MIN_PASS_RATE: ${{ vars.LIVE_EVAL_MIN_PASS_RATE || '0.75' }}
+      HAS_GEMINI_KEY: ${{ secrets.GEMINI_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Authenticate to Google Cloud (Vertex AI path)
+        if: ${{ env.HAS_GEMINI_KEY != 'true' }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Run the eval suite against Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          VERTEX_LOCATION: ${{ vars.VERTEX_LOCATION || 'global' }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            unset GEMINI_API_KEY
+            export GOOGLE_GENAI_USE_VERTEXAI=true
+            export GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID"
+            export GOOGLE_CLOUD_LOCATION="$VERTEX_LOCATION"
+          fi
+          python -m evals --out evals/REPORT.live.md
+
+      - name: Report to the job summary
+        if: always()
+        run: |
+          if [ -f evals/REPORT.live.md ]; then
+            cat evals/REPORT.live.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-eval-report
+          path: evals/REPORT.live.md
+          if-no-files-found: ignore

@@ -38,9 +38,14 @@ class CaseResult:
     output_tokens: int
     elapsed_ms: float
     projected_cost_usd: float
+    # Set when the run itself blew up (a live provider error, say) rather than
+    # scoring badly. The case fails; the rest of the suite still runs.
+    error: str | None = None
 
     @property
     def passed(self) -> bool:
+        if self.error:
+            return False
         return all(v == 1.0 for v in self.scores.values() if v is not None)
 
 
@@ -55,10 +60,28 @@ def load_cases(path: Path = DATASET) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def select_cases(cases: list[dict], max_cases: int | None) -> list[dict]:
+    """Cap the suite for a paid run. Injection probes are always kept (they
+    are the cases a model is most likely to regress on), the rest are taken
+    in dataset order, and the result keeps dataset order."""
+    if not max_cases or max_cases >= len(cases):
+        return cases
+    probes = [c for c in cases if "injection" in c["id"]]
+    keep = {c["id"] for c in probes[:max_cases]}
+    for c in cases:
+        if len(keep) >= max_cases:
+            break
+        keep.add(c["id"])
+    return [c for c in cases if c["id"] in keep]
+
+
 def run_case(case: dict) -> CaseResult:
     cost_tracker.reset_budget()  # each case gets its own session budget
     trace = Trace()
-    Supervisor(trace).run(case["query"])
+    try:
+        Supervisor(trace).run(case["query"])
+    except Exception as exc:  # noqa: BLE001 - recorded on the case, suite continues
+        return _errored(case, trace, exc)
     scores = metrics.score_case(case, trace)
     cost = (
         trace.input_tokens / 1_000_000 * _IN_PER_MTOK
@@ -81,12 +104,31 @@ def run_case(case: dict) -> CaseResult:
     )
 
 
-def run_suite() -> Suite:
+def _errored(case: dict, trace: Trace, exc: Exception) -> CaseResult:
+    return CaseResult(
+        id=case["id"],
+        query=case["query"],
+        scores={},
+        leaf_tools=[c.name for c in trace.leaf_calls("economic_data_agent")],
+        expected_leaf_tools=case["expected_leaf_tools"],
+        series_used=trace.series_used,
+        expected_series=case["expected_series"],
+        delegations=[d.to for d in trace.delegations],
+        risk_signal=trace.risk_signal,
+        input_tokens=trace.input_tokens,
+        output_tokens=trace.output_tokens,
+        elapsed_ms=round(trace.elapsed_ms, 1),
+        projected_cost_usd=0.0,
+        error=f"{type(exc).__name__}: {str(exc)[:200]}",
+    )
+
+
+def run_suite(max_cases: int | None = None) -> Suite:
     backend = os.environ.get("AGENT_BACKEND", "stub").strip().lower()
     # The harness is hermetic: force offline FRED unless the caller really
     # wants live data (and has said so alongside a live backend).
     os.environ.setdefault("FRED_OFFLINE", "1")
     suite = Suite(backend=backend)
-    for case in load_cases():
+    for case in select_cases(load_cases(), max_cases):
         suite.results.append(run_case(case))
     return suite
