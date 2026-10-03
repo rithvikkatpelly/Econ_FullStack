@@ -22,6 +22,12 @@ env:
   BACKEND_SERVICE: ${{ vars.BACKEND_SERVICE }}
   FRONTEND_SERVICE: ${{ vars.FRONTEND_SERVICE }}
   FRED_API_KEY_SECRET: ${{ vars.FRED_API_KEY_SECRET }}
+  # Agent endpoints (/agent/*) run on Gemini. Default: Vertex AI with the
+  # Cloud Run runtime service account — no model key stored anywhere. Set
+  # GEMINI_API_KEY_SECRET to use a Gemini API key from Secret Manager instead.
+  GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+  GEMINI_API_KEY_SECRET: ${{ vars.GEMINI_API_KEY_SECRET }}
+  VERTEX_LOCATION: ${{ vars.VERTEX_LOCATION }}
 
 permissions:
   contents: read
@@ -29,6 +35,9 @@ permissions:
 
 jobs:
   deploy:
+    # Skip (rather than fail) until the one-time GCP setup in DEPLOYMENT.md
+    # has been done and its repo variables exist.
+    if: ${{ vars.GCP_PROJECT_ID != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -66,6 +75,13 @@ jobs:
 
       - name: Deploy backend to Cloud Run
         run: |
+          AGENT_ENV="AGENT_BACKEND=gemini,GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash}"
+          SECRETS="FRED_API_KEY=${FRED_API_KEY_SECRET}:latest"
+          if [ -n "$GEMINI_API_KEY_SECRET" ]; then
+            SECRETS="${SECRETS},GEMINI_API_KEY=${GEMINI_API_KEY_SECRET}:latest"
+          else
+            AGENT_ENV="${AGENT_ENV},GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION:-global}"
+          fi
           gcloud run deploy "$BACKEND_SERVICE" \
             --image="$BACKEND_IMAGE" \
             --region="$REGION" \
@@ -76,8 +92,9 @@ jobs:
             --max-instances=3 \
             --port=8080 \
             --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=3,failureThreshold=3 \
-            --set-env-vars="FRED_OFFLINE=0,SESSION_TOKEN_BUDGET=50000" \
-            --set-secrets="FRED_API_KEY=${FRED_API_KEY_SECRET}:latest"
+            --timeout=300 \
+            --set-env-vars="FRED_OFFLINE=0,SESSION_TOKEN_BUDGET=50000,${AGENT_ENV}" \
+            --set-secrets="$SECRETS"
 
       - name: Capture backend URL
         run: |
