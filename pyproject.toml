@@ -9,7 +9,7 @@ readme = "README.md"
 # and CI install). This file carries project metadata and tool config only.
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "backend"]
+pythonpath = [".", "src", "backend"]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = [
