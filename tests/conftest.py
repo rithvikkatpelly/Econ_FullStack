@@ -24,10 +24,12 @@ def _hermetic(tmp_path, monkeypatch):
     import fred_client
     import news_client
     import rate_limit
+    from agents import model as agent_model
 
     fred_client._cache.clear()
     news_client._cache.clear()
     audit_log.reset()
     rate_limit.limiter.reset()
     cost_tracker.reset_budget()
+    agent_model.reset_overload_state()
     yield

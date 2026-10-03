@@ -160,7 +160,8 @@ def test_failures_are_masked_and_release_the_slot(client, monkeypatch):
 
 def test_stream_runs_on_the_gemini_backend(client, monkeypatch):
     """End to end over HTTP with AGENT_BACKEND=gemini: a scripted fake Gemini
-    client drives the supervisor, which delegates once and answers."""
+    client drives the supervisor, which delegates once; the Report Agent's
+    answer streams back as report_delta events, chunk by chunk."""
     types = pytest.importorskip("google.genai.types")
     import google.genai
 
@@ -176,22 +177,76 @@ def test_stream_runs_on_the_gemini_backend(client, monkeypatch):
                 name="delegate_to_report_agent", args={"task": "Say hello."}))]),
             resp([types.Part(text="Hello from the report agent.")]),
         ],
-        "report_agent": [resp([types.Part(text="Hello from the report agent.")])],
     }
+    report_chunks = ["Hello ", "from the ", "report agent."]
 
     class Models:
         def generate_content(self, *, model, contents, config):
-            role = ("report_agent" if config.system_instruction.startswith("You are the Report")
-                    else "supervisor")
-            return script[role].pop(0)
+            assert not config.system_instruction.startswith("You are the Report")
+            return script["supervisor"].pop(0)
+
+        def generate_content_stream(self, *, model, contents, config):
+            assert config.system_instruction.startswith("You are the Report")
+            for text in report_chunks:
+                yield resp([types.Part(text=text)])
 
     class Client:
         models = Models()
+
+        def __init__(self, **_kwargs):  # the real client gets retry options
+            pass
 
     monkeypatch.setenv("AGENT_BACKEND", "gemini")
     monkeypatch.setattr(google.genai, "Client", Client)
 
     events = _events(client.post("/agent/stream", json={"query": "Say hello."}))
-    assert [e["type"] for e in events] == ["start", "delegation", "agent_output", "final"]
+    assert [e["type"] for e in events] == [
+        "start", "delegation", "report_delta", "report_delta", "report_delta",
+        "agent_output", "final",
+    ]
     assert events[0]["backend"] == "gemini"
+    assert [e["text"] for e in events if e["type"] == "report_delta"] == report_chunks
     assert events[-1]["final_report"] == "Hello from the report agent."
+
+
+def test_stub_backend_delivers_the_report_as_one_delta(client):
+    """Backends without native streaming still emit report_delta — once — so
+    the UI has a single code path."""
+    events = _events(client.post("/agent/stream", json={"query": QUERY}))
+    deltas = [e for e in events if e["type"] == "report_delta"]
+    assert len(deltas) == 1
+    assert deltas[0]["text"] == events[-1]["final_report"]
+    # It arrives after the Report Agent is delegated to, before it finishes.
+    types = [e["type"] for e in events]
+    assert types.index("report_delta") < len(types) - 2
+    assert types[types.index("report_delta") + 1] == "agent_output"
+
+
+def test_ask_endpoint_does_not_stream(client, monkeypatch):
+    """No listener, no streaming: /agent/ask uses plain turns."""
+    from agents.model import StubModel
+
+    def boom(*_a, **_k):
+        raise AssertionError("stream_turn used without a listener")
+
+    monkeypatch.setattr(StubModel, "stream_turn", boom)
+    assert client.post("/agent/ask", json={"query": QUERY}).status_code == 200
+
+
+def test_quota_exhaustion_is_reported_as_such(client, monkeypatch):
+    """A used-up model quota gets its own error code (and 429), so the UI can
+    say "try again in a minute" instead of "rephrase your question"."""
+    from agents.model import QuotaExhausted
+    from app import agent
+
+    def out_of_quota(*_a, **_k):
+        raise QuotaExhausted("The Gemini API quota for this key is used up for now.")
+
+    monkeypatch.setattr(agent, "_run", out_of_quota)
+    r = client.post("/agent/ask", json={"query": "Show core PCE since 2021."})
+    assert r.status_code == 429
+    assert r.json()["detail"]["error"] == "model_quota_exhausted"
+
+    events = _events(client.post("/agent/stream", json={"query": "Show core PCE since 2021."}))
+    assert events[-1]["type"] == "error"
+    assert events[-1]["error"] == "model_quota_exhausted"

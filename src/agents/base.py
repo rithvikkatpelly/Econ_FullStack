@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from datetime import date
 
 from agents.model import Model, ModelResponse
 from agents.trace import Trace
@@ -33,6 +34,7 @@ class Agent:
         model: Model,
         trace: Trace,
         max_iterations: int = MAX_ITERATIONS,
+        stop_when: Callable[[], bool] | None = None,
     ):
         self.name = name
         self.system = system
@@ -41,12 +43,26 @@ class Agent:
         self.model = model
         self.trace = trace
         self.max_iterations = max_iterations
+        # Checked after each round of tool calls: True ends the run without
+        # another model turn (the supervisor stops once the report exists).
+        self.stop_when = stop_when
+        # Set to receive answer text as the model produces it (the supervisor
+        # does this for the Report Agent so the UI can stream the answer).
+        self.on_text: Callable[[str], None] | None = None
+        # A backend that may pause (e.g. waiting out a provider quota) says so
+        # through `notify`; route it into the trace so the UI can show it.
+        if hasattr(model, "notify"):
+            model.notify = lambda event: trace.emit({**event, "agent": name})
 
     def run(self, task: str) -> str:
         messages: list[dict] = [{"role": "user", "content": task}]
+        system = with_today(self.system)
 
         for _ in range(self.max_iterations):
-            resp = self.model.turn(self.system, messages, self.tools)
+            if self.on_text is None:
+                resp = self.model.turn(system, messages, self.tools)
+            else:
+                resp = self.model.stream_turn(system, messages, self.tools, self.on_text)
             self.trace.add_usage(resp.input_tokens, resp.output_tokens)
             messages.append({"role": "assistant", "content": _assistant_content(resp)})
 
@@ -70,11 +86,21 @@ class Agent:
                     }
                 )
             messages.append({"role": "user", "content": results})
+            if self.stop_when is not None and self.stop_when():
+                return ""
 
         return (
             "Stopped: hit the "
             f"{self.max_iterations}-iteration cap without a final answer."
         )
+
+
+def with_today(system: str) -> str:
+    """Append today's date to a system prompt. Found on the first live Gemini
+    run: asked for "the last 5 years" in October 2026, the model fetched
+    2019-2024 — it has no idea what today is unless told. Appended at the end
+    so the static prompt stays a stable, cacheable prefix."""
+    return f"{system.rstrip()}\n\nToday's date is {date.today().isoformat()}."
 
 
 def _assistant_content(resp: ModelResponse) -> list[dict]:

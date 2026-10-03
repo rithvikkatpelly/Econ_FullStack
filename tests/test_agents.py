@@ -85,3 +85,71 @@ def test_trace_to_dict_is_serializable():
 
     trace = run("Compare CPI and unemployment from 2019 to 2024.")
     json.dumps(trace.to_dict())  # must not raise
+
+
+def test_supervisor_stops_as_soon_as_the_report_exists():
+    """No extra supervisor turn after the Report Agent answers (it used to
+    spend a whole model call retyping the report)."""
+    from agents.model import StubModel
+    from agents.supervisor import Supervisor
+
+    class Counting(StubModel):
+        turns = 0
+
+        def turn(self, system, messages, tools):
+            Counting.turns += 1
+            return super().turn(system, messages, tools)
+
+    trace = Trace()
+    Supervisor(trace, model=Counting("supervisor")).run(
+        "Analyze whether inflation and unemployment indicate recession risk since 2019."
+    )
+    # Four delegating turns, no fifth "echo the report" turn.
+    assert Counting.turns == 4
+    assert [d.to for d in trace.delegations][-1] == "report_agent"
+    assert "Evidence" in trace.final_report
+
+
+def test_an_empty_report_does_not_end_the_run():
+    from agents.base import Agent
+    from agents.model import ModelResponse, ToolRequest
+
+    class TwoTurns:
+        role = "supervisor"
+        calls = 0
+
+        def turn(self, system, messages, tools):
+            TwoTurns.calls += 1
+            if TwoTurns.calls == 1:
+                req = ToolRequest(id="x", name="delegate_to_report_agent", input={"task": "hi"})
+                return ModelResponse(tool_requests=[req], stop_reason="tool_use")
+            return ModelResponse(text="fallback answer")
+
+    trace = Trace()
+    out = Agent(
+        "supervisor", "", [], lambda n, a: {"output": ""}, TwoTurns(), trace,
+        stop_when=lambda: bool(trace.final_report.strip()),
+    ).run("go")
+    assert out == "fallback answer"
+
+
+def test_every_agent_is_told_todays_date():
+    """Without it a live model resolves "the last 5 years" from its training
+    cutoff (seen live: 2019-2024 asked in 2026)."""
+    from datetime import date
+
+    from agents.base import Agent
+    from agents.model import ModelResponse
+
+    seen = []
+
+    class Recorder:
+        role = "economic_data_agent"
+
+        def turn(self, system, messages, tools):
+            seen.append(system)
+            return ModelResponse(text="done")
+
+    Agent("economic_data_agent", "Static prompt.", [], None, Recorder(), Trace()).run("go")
+    assert seen[0].startswith("Static prompt.")
+    assert seen[0].endswith(f"Today's date is {date.today().isoformat()}.")

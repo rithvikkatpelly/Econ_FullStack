@@ -27,6 +27,11 @@ class FakeModels:
         self.calls.append({"model": model, "contents": contents, "config": config})
         return self._responses.pop(0)
 
+    def generate_content_stream(self, *, model, contents, config):
+        """Each scripted entry for a streamed turn is a list of chunks."""
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        yield from self._responses.pop(0)
+
 
 class FakeClient:
     def __init__(self, responses):
@@ -227,8 +232,29 @@ def test_make_model_selects_gemini(monkeypatch):
     import google.genai
 
     monkeypatch.setenv("AGENT_BACKEND", "gemini")
-    monkeypatch.setattr(google.genai, "Client", lambda: FakeClient([]))
+    monkeypatch.setattr(google.genai, "Client", lambda **_kw: FakeClient([]))
     assert isinstance(make_model("supervisor"), GeminiModel)
+
+
+def test_real_client_is_built_with_retries(monkeypatch):
+    """The SDK never retries by default; one transient 503 used to end the
+    whole multi-agent run (found on the first live run)."""
+    import google.genai
+
+    seen = {}
+
+    def client(**kwargs):
+        seen.update(kwargs)
+        return FakeClient([])
+
+    monkeypatch.setattr(google.genai, "Client", client)
+    GeminiModel("supervisor")
+    retry = seen["http_options"].retry_options
+    assert retry.attempts >= 3
+    # Transient 503s are the SDK's job; 429s go to the quota-aware path,
+    # which waits as long as Google asks instead of a blind 1-20 s backoff.
+    assert 503 in retry.http_status_codes
+    assert 429 not in retry.http_status_codes
 
 
 def test_tool_result_json_round_trips():
@@ -237,3 +263,367 @@ def test_tool_result_json_round_trips():
 
     assert _as_response_dict(json.dumps(payload)) == payload
     assert _as_response_dict(json.dumps([1, 2])) == {"result": [1, 2]}
+
+
+# --- streaming (stream_turn) -------------------------------------------------
+
+
+def _chunk(parts, finish=None, usage=None):
+    return types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(content=types.Content(role="model", parts=parts), finish_reason=finish)
+        ],
+        usage_metadata=usage,
+    )
+
+
+def test_stream_turn_forwards_text_as_it_arrives_and_returns_the_whole():
+    usage = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=40, candidates_token_count=9
+    )
+    client = FakeClient([[
+        _chunk([types.Part(text="planning…", thought=True)]),
+        _chunk([types.Part(text="Unemployment ")]),
+        _chunk([types.Part(text="fell to 4.1%.")], finish="STOP", usage=usage),
+    ]])
+    seen: list[str] = []
+    resp = GeminiModel("report_agent", client=client, model="m").stream_turn(
+        "s", [{"role": "user", "content": "q"}], [], seen.append
+    )
+    # Thought summaries never reach the user-facing stream.
+    assert seen == ["Unemployment ", "fell to 4.1%."]
+    # Fragments concatenate as-is — no newline between chunks.
+    assert resp.text == "Unemployment fell to 4.1%."
+    assert (resp.input_tokens, resp.output_tokens) == (40, 9)
+    assert resp.stop_reason == "end_turn"
+
+
+def test_streamed_function_call_is_replayed_with_its_signature():
+    sig = b"streamed-signature"
+    client = FakeClient([
+        [
+            _chunk([types.Part(text="Let me check. ")]),
+            _chunk([_call("get_series_metadata", {"series_id": "UNRATE"}, id="s1",
+                          signature=sig)], finish="STOP"),
+        ],
+        [_chunk([types.Part(text="Done.")], finish="STOP")],
+    ])
+    model = GeminiModel("research_agent", client=client, model="m")
+    agent = Agent(
+        "research_agent", "sys",
+        [t for t in tools.TOOL_SCHEMAS if t["name"] == "get_series_metadata"],
+        tools.call_tool, model, Trace(),
+    )
+    seen: list[str] = []
+    agent.on_text = seen.append
+    assert agent.run("Frame UNRATE.") == "Done."
+
+    replayed = client.models.calls[1]["contents"][1]
+    assert [p.text for p in replayed.parts if p.text] == ["Let me check. "]
+    fc_part = next(p for p in replayed.parts if p.function_call)
+    assert fc_part.thought_signature == sig
+    # Text that preceded the tool call was streamed too; that's the model's
+    # own narration, and the caller decides whether to show it.
+    assert seen == ["Let me check. ", "Done."]
+
+
+def test_stream_refusal_on_the_last_chunk():
+    client = FakeClient([[
+        _chunk([types.Part(text="Partial ")]),
+        _chunk([], finish="SAFETY"),
+    ]])
+    resp = GeminiModel("report_agent", client=client, model="m").stream_turn(
+        "s", [{"role": "user", "content": "q"}], [], lambda _t: None
+    )
+    assert resp.stop_reason == "refusal"
+    assert resp.text == "[model refused: safety]"
+
+
+def test_empty_stream_is_a_refusal_not_a_crash():
+    client = FakeClient([[]])
+    resp = GeminiModel("report_agent", client=client, model="m").stream_turn(
+        "s", [{"role": "user", "content": "q"}], [], lambda _t: None
+    )
+    assert resp.stop_reason == "refusal"
+
+
+# --- quota (429) handling -----------------------------------------------------
+# Found on the first live run: a free-tier key allows 5 requests/min/model,
+# fewer than one agent run makes, and Google answers 429 with "retry in ~58s".
+
+from google.genai import errors  # noqa: E402
+
+from agents.model import QuotaExhausted, _quota_wait  # noqa: E402
+
+
+def _429(retry_delay="42s", quota_id="GenerateRequestsPerMinutePerProjectPerModel-FreeTier"):
+    details = [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+         "violations": [{"quotaId": quota_id, "quotaValue": "5"}]},
+    ]
+    if retry_delay is not None:
+        details.append({"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": retry_delay})
+    return errors.ClientError(429, {"error": {
+        "code": 429, "status": "RESOURCE_EXHAUSTED", "message": "quota", "details": details,
+    }})
+
+
+class FlakyModels(FakeModels):
+    """Raises the scripted exceptions first, then serves responses."""
+
+    def __init__(self, failures, responses):
+        super().__init__(responses)
+        self._failures = list(failures)
+
+    def generate_content(self, **kw):
+        if self._failures:
+            raise self._failures.pop(0)
+        return super().generate_content(**kw)
+
+    def generate_content_stream(self, **kw):
+        if self._failures:
+            raise self._failures.pop(0)
+        yield from super().generate_content_stream(**kw)
+
+
+def _flaky_model(failures, responses, role="report_agent"):
+    client = FakeClient([])
+    client.models = FlakyModels(failures, responses)
+    model = GeminiModel(role, client=client, model="m")
+    model._chain = ["m"]  # quota handling on one model; fallback is tested below
+    model.slept = []
+    model._sleep = model.slept.append
+    return model
+
+
+def test_quota_wait_reads_google_retry_info():
+    assert _quota_wait(_429("42s")) == 43.0
+    assert _quota_wait(_429("0.5s")) == 1.5
+    # Waiting can't fix a per-day quota, a missing hint, or a very long wait.
+    assert _quota_wait(_429("42s", quota_id="GenerateRequestsPerDayPerProjectPerModel")) is None
+    assert _quota_wait(_429(None)) is None
+    assert _quota_wait(_429("3600s")) is None
+
+
+def test_429_waits_as_told_then_succeeds_and_says_so():
+    model = _flaky_model([_429("42s")], [_response([types.Part(text="ok")])])
+    events = []
+    model.notify = events.append
+    resp = model.turn("s", [{"role": "user", "content": "q"}], [])
+    assert resp.text == "ok"
+    assert model.slept == [43.0]
+    assert events == [{"type": "waiting", "reason": "rate_limited", "seconds": 43}]
+
+
+def test_daily_quota_fails_fast_with_a_safe_error():
+    model = _flaky_model([_429("42s", quota_id="GenerateRequestsPerDayPerProjectPerModel")], [])
+    with pytest.raises(QuotaExhausted) as info:
+        model.turn("s", [{"role": "user", "content": "q"}], [])
+    assert model.slept == []
+    assert "quota" in str(info.value).lower()
+
+
+def test_quota_retries_are_bounded():
+    from agents import model as model_mod
+
+    failures = [_429("1s") for _ in range(model_mod.GEMINI_QUOTA_RETRIES + 1)]
+    model = _flaky_model(failures, [])
+    with pytest.raises(QuotaExhausted):
+        model.turn("s", [{"role": "user", "content": "q"}], [])
+    assert len(model.slept) == model_mod.GEMINI_QUOTA_RETRIES
+
+
+def test_other_client_errors_are_not_retried():
+    bad = errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}})
+    model = _flaky_model([bad], [])
+    with pytest.raises(errors.ClientError):
+        model.turn("s", [{"role": "user", "content": "q"}], [])
+    assert model.slept == []
+
+
+def test_stream_429_before_any_text_is_retried():
+    model = _flaky_model([_429("2s")], [[_chunk([types.Part(text="hello")], finish="STOP")]])
+    seen = []
+    resp = model.stream_turn("s", [{"role": "user", "content": "q"}], [], seen.append)
+    assert resp.text == "hello" and seen == ["hello"]
+    assert model.slept == [3.0]
+
+
+def test_stream_429_after_text_was_shown_is_not_retried():
+    """Retrying would repeat the words the user already saw."""
+
+    class MidStream(FakeModels):
+        def generate_content_stream(self, **kw):
+            yield _chunk([types.Part(text="partial ")])
+            raise _429("2s")
+
+    client = FakeClient([])
+    client.models = MidStream([])
+    model = GeminiModel("report_agent", client=client, model="m")
+    model._sleep = lambda s: pytest.fail("must not wait and retry mid-stream")
+    with pytest.raises(QuotaExhausted):
+        model.stream_turn("s", [{"role": "user", "content": "q"}], [], lambda _t: None)
+
+
+def test_agent_routes_quota_waits_into_the_trace():
+    model = _flaky_model([_429("5s")], [_response([types.Part(text="done")])], role="risk_agent")
+    events = []
+    trace = Trace(listener=events.append)
+    Agent("risk_agent", "sys", [], tools.call_tool, model, trace).run("assess")
+    waits = [e for e in events if e["type"] == "waiting"]
+    assert waits == [{"type": "waiting", "reason": "rate_limited", "seconds": 6,
+                      "agent": "risk_agent", "elapsed_ms": waits[0]["elapsed_ms"]}]
+
+
+# --- model fallback on overload (503) ----------------------------------------
+# Found live: gemini-3.8-flash and 3.7-flash both returned 503 "high demand"
+# through every retry while 3.6-flash answered in ~1 s.
+
+
+def _503():
+    return errors.ServerError(503, {"error": {
+        "code": 503, "status": "UNAVAILABLE", "message": "high demand",
+    }})
+
+
+class ByModel(FakeModels):
+    """Overloaded models raise 503; everything else answers, recording which
+    model served each call."""
+
+    def __init__(self, overloaded, responses):
+        super().__init__(responses)
+        self.overloaded = set(overloaded)
+        self.served_by: list[str] = []
+
+    def generate_content(self, *, model, contents, config):
+        if model in self.overloaded:
+            raise _503()
+        self.served_by.append(model)
+        return super().generate_content(model=model, contents=contents, config=config)
+
+    def generate_content_stream(self, *, model, contents, config):
+        if model in self.overloaded:
+            raise _503()
+        self.served_by.append(model)
+        yield from super().generate_content_stream(model=model, contents=contents, config=config)
+
+
+@pytest.fixture
+def chain(monkeypatch):
+    from agents import model as model_mod
+
+    monkeypatch.setattr(model_mod, "GEMINI_FALLBACK_MODELS", ["fallback-1", "fallback-2"])
+
+
+def _model_on(models, role="report_agent"):
+    client = FakeClient([])
+    client.models = models
+    return GeminiModel(role, client=client, model="primary")
+
+
+def test_overloaded_primary_falls_back_and_says_so(chain):
+    models = ByModel({"primary"}, [_response([types.Part(text="ok")])])
+    model = _model_on(models)
+    events = []
+    model.notify = events.append
+    assert model.turn("s", [{"role": "user", "content": "q"}], []).text == "ok"
+    assert models.served_by == ["fallback-1"]
+    assert events == [{"type": "fallback", "reason": "overloaded",
+                       "from_model": "primary", "to_model": "fallback-1"}]
+
+
+def test_fallback_walks_the_whole_chain(chain):
+    models = ByModel({"primary", "fallback-1"}, [_response([types.Part(text="ok")])])
+    assert _model_on(models).turn("s", [{"role": "user", "content": "q"}], []).text == "ok"
+    assert models.served_by == ["fallback-2"]
+
+
+def test_circuit_breaker_starts_the_next_agent_on_the_fallback(chain):
+    first = ByModel({"primary"}, [_response([types.Part(text="a")])])
+    _model_on(first).turn("s", [{"role": "user", "content": "q"}], [])
+    # The primary has recovered, but its breaker is still tripped: the next
+    # agent doesn't spend ~10 s of retries rediscovering the overload.
+    second = ByModel(set(), [_response([types.Part(text="b")])])
+    _model_on(second).turn("s", [{"role": "user", "content": "q"}], [])
+    assert second.served_by == ["fallback-1"]
+
+
+def test_everything_overloaded_raises_the_503(chain):
+    models = ByModel({"primary", "fallback-1", "fallback-2"}, [])
+    with pytest.raises(errors.ServerError):
+        _model_on(models).turn("s", [{"role": "user", "content": "q"}], [])
+
+
+def test_no_fallback_mid_loop(chain):
+    """After a function-call turn on the primary, the replayed history carries
+    the primary's thought signatures — another model can't continue it, so a
+    503 on the *second* turn is raised, not failed over."""
+
+    class FirstTurnOnly(FakeModels):
+        def generate_content(self, *, model, contents, config):
+            if self.calls:
+                raise _503()
+            return super().generate_content(model=model, contents=contents, config=config)
+
+    models = FirstTurnOnly([
+        _response([_call("get_series_metadata", {"series_id": "UNRATE"}, id="c1")]),
+    ])
+    agent = Agent(
+        "research_agent", "sys",
+        [t for t in tools.TOOL_SCHEMAS if t["name"] == "get_series_metadata"],
+        tools.call_tool, _model_on(models, role="research_agent"), Trace(),
+    )
+    with pytest.raises(errors.ServerError):
+        agent.run("Frame UNRATE.")
+    assert [c["model"] for c in models.calls] == ["primary"]
+
+
+def test_no_fallback_after_streamed_text_was_shown(chain):
+    class DiesMidStream(FakeModels):
+        def generate_content_stream(self, **kw):
+            yield _chunk([types.Part(text="partial ")])
+            raise _503()
+
+    client = FakeClient([])
+    client.models = DiesMidStream([])
+    model = GeminiModel("report_agent", client=client, model="primary")
+    with pytest.raises(errors.ServerError):
+        model.stream_turn("s", [{"role": "user", "content": "q"}], [], lambda _t: None)
+
+
+def test_non_overload_server_errors_do_not_fall_back(chain):
+    class Broken(FakeModels):
+        def generate_content(self, **kw):
+            raise errors.ServerError(500, {"error": {"code": 500, "status": "INTERNAL"}})
+
+    client = FakeClient([])
+    client.models = Broken([])
+    with pytest.raises(errors.ServerError):
+        GeminiModel("report_agent", client=client, model="primary").turn(
+            "s", [{"role": "user", "content": "q"}], []
+        )
+
+
+def test_a_model_out_of_daily_quota_falls_back(chain):
+    """Found live: gemini-3.8-flash's free-tier *daily* quota (20) ran out
+    ("retry in 4h45m"). Quotas are per model, so the next one can serve."""
+
+    class DailyQuotaGone(FakeModels):
+        def generate_content(self, *, model, contents, config):
+            if model == "primary":
+                raise _429("17139s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+            return super().generate_content(model=model, contents=contents, config=config)
+
+    models = DailyQuotaGone([_response([types.Part(text="ok")])])
+    model = _model_on(models)
+    events = []
+    model.notify = events.append
+    model._sleep = lambda s: pytest.fail("a daily quota must not be waited out")
+    assert model.turn("s", [{"role": "user", "content": "q"}], []).text == "ok"
+    assert events[0]["reason"] == "quota_exhausted"
+    assert [c["model"] for c in models.calls] == ["fallback-1"]
+    # Breaker held for Google's estimate (hours), not the 2-minute overload cooldown.
+    from agents import model as model_mod
+
+    assert model_mod._overloaded_until["primary"] - __import__("time").monotonic() > 17000

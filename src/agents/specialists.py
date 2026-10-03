@@ -54,7 +54,8 @@ REPORT_SYSTEM = """\
 You are the Report Agent. Write the final answer for the user: a tight
 narrative (no more than ~150 words) that directly answers the question,
 followed by an "Evidence" section listing every FRED series ID used and the
-risk signal. Ground every claim in the data you were handed. If the data was
+risk signal exactly as the Risk Agent gave it (rising, elevated, stable or
+easing). Ground every claim in the data you were handed. If the data was
 insufficient, say so plainly.
 """
 

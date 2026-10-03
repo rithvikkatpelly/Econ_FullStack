@@ -22,6 +22,7 @@ import re
 from datetime import date
 
 import catalog
+from agents import conversation
 from agents.model import ModelResponse, ToolRequest
 
 _ANALYSIS_HINTS = (
@@ -116,12 +117,34 @@ def _tool(role: str, messages: list[dict], name: str, tool_input: dict) -> Model
 # --- per-role planners --------------------------------------------------
 
 
+def _is_analytical(text: str) -> bool:
+    return any(h in text.lower() for h in _ANALYSIS_HINTS)
+
+
+def _resolve_follow_up(message: str) -> tuple[str, bool]:
+    """(the question to plan from, whether it's analytical).
+
+    A follow-up that names no series of its own ("what about since 2015?")
+    inherits the series of the most recent earlier turn that had any, and
+    that turn's analytical intent. Its own dates still win — the stub does not
+    inherit a period."""
+    history, question = conversation.split(message)
+    analytical = _is_analytical(question)
+    if not history or _series_for(question):
+        return question, analytical
+    for prior_q, prior_a in reversed(history):
+        prior = _series_in_text(prior_a) or _series_for(prior_q)
+        if prior:
+            inherited = f"{question} (follow-up on {', '.join(prior)})"
+            return inherited, analytical or _is_analytical(prior_q)
+    return question, analytical
+
+
 def _plan_supervisor(messages: list[dict]) -> ModelResponse:
-    query = _first_user_text(messages)
+    query, analytical = _resolve_follow_up(_first_user_text(messages))
     done = [n.removeprefix("delegate_to_") for n in _assistant_tool_names(messages)]
     findings = "\n".join(_tool_result_texts(messages))
 
-    analytical = any(h in query.lower() for h in _ANALYSIS_HINTS) or "risk" in query.lower()
     plan = (
         ["economic_data_agent", "research_agent", "risk_agent", "report_agent"]
         if analytical

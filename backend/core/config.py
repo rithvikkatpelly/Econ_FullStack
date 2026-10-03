@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     agent_rate_limit_burst: float = 3
     agent_max_concurrent_runs: int = 2
     agent_max_query_chars: int = 500
+    # Tool-data tokens one question may pull (cost_tracker.run_budget). Each
+    # run gets its own, separate from SESSION_TOKEN_BUDGET, which the tool
+    # endpoints share.
+    agent_run_token_budget: int = 30000
 
     @property
     def agent_model_configured(self) -> bool:

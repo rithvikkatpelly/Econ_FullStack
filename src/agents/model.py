@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +37,65 @@ MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "8000"))
 # Default Gemini model for live runs (latest stable Flash). Override with
 # GEMINI_MODEL, e.g. a Pro model for the supervisor-heavy workloads.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# The google-genai SDK does not retry unless asked. One agent run is 5-10
+# model calls and Gemini returns transient 503 "high demand" errors under
+# load, so every call gets exponential backoff with jitter on 408/5xx.
+# Total attempts, including the first.
+GEMINI_RETRY_ATTEMPTS = int(os.environ.get("GEMINI_RETRY_ATTEMPTS", "4"))
+_TRANSIENT_CODES = [408, 500, 502, 503, 504]
+
+# 429 is handled separately (GeminiModel._with_quota_retry): Google says how
+# long to wait (RetryInfo), often ~60 s on a per-minute quota — the free tier
+# allows 5 requests/min/model, less than one agent run — and a blind 1-20 s
+# backoff just burns attempts. We wait what we're told, up to this cap, a
+# bounded number of times; a per-day quota fails fast since waiting can't help.
+GEMINI_MAX_QUOTA_WAIT_S = float(os.environ.get("GEMINI_MAX_QUOTA_WAIT_S", "75"))
+GEMINI_QUOTA_RETRIES = int(os.environ.get("GEMINI_QUOTA_RETRIES", "3"))
+
+
+# When the primary model stays overloaded (503 "high demand" after the SDK's
+# retries), fall back down this list. The newest models are the likeliest to
+# be overloaded; one or two releases back usually has capacity.
+_DEFAULT_FALLBACKS = "gemini-3.6-flash,gemini-3.5-flash"
+GEMINI_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.environ.get("GEMINI_FALLBACK_MODELS", _DEFAULT_FALLBACKS).split(",")
+    if m.strip()
+]
+# Circuit breaker: once a model has failed over, skip it for this long so the
+# rest of the run (and other runs in this process) start on the fallback
+# instead of each sitting through the retries again.
+GEMINI_OVERLOAD_COOLDOWN_S = float(os.environ.get("GEMINI_OVERLOAD_COOLDOWN_S", "120"))
+_overloaded_until: dict[str, float] = {}
+_overloaded_lock = threading.Lock()
+
+
+def reset_overload_state() -> None:
+    """Forget every tripped circuit breaker (tests, or after a config change)."""
+    with _overloaded_lock:
+        _overloaded_until.clear()
+
+
+def _mark_overloaded(model: str, seconds: float | None = None) -> None:
+    with _overloaded_lock:
+        _overloaded_until[model] = time.monotonic() + max(
+            GEMINI_OVERLOAD_COOLDOWN_S, seconds or 0.0
+        )
+
+
+def _is_overloaded(model: str) -> bool:
+    with _overloaded_lock:
+        return _overloaded_until.get(model, 0.0) > time.monotonic()
+
+
+class QuotaExhausted(RuntimeError):
+    """The model provider's quota is used up and waiting won't (quickly) fix
+    it. Safe to show: carries no request details. `retry_after` is Google's
+    own estimate, when it gave one (hours, for a per-day quota)."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 # Effort per role: the leaf specialists do bounded, well-specified work and run
 # at low effort to keep cost down; the supervisor and report writer get more
@@ -75,6 +137,21 @@ class Model:
 
     def turn(self, system: str, messages: list[dict], tools: list[dict]) -> ModelResponse:
         raise NotImplementedError
+
+    def stream_turn(
+        self,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        on_text: Callable[[str], None],
+    ) -> ModelResponse:
+        """Like `turn`, but report answer text through `on_text` as it is
+        produced. Backends without native streaming deliver it in one piece,
+        so callers never need to know which kind they have."""
+        resp = self.turn(system, messages, tools)
+        if resp.text and not resp.wants_tools:
+            on_text(resp.text)
+        return resp
 
 
 class AnthropicModel(Model):
@@ -139,8 +216,25 @@ class GeminiModel(Model):
     def __init__(self, role: str, client=None, model: str = GEMINI_MODEL):
         super().__init__(role)
         from google import genai  # local import so the stub path needs no dependency
+        from google.genai import types
 
-        self._client = client or genai.Client()
+        # Primary first, then the fallbacks; start on the first one whose
+        # circuit breaker isn't tripped.
+        self._chain = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
+        model = next((m for m in self._chain if not _is_overloaded(m)), self._chain[-1])
+        self._client = client or genai.Client(
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(
+                    attempts=GEMINI_RETRY_ATTEMPTS,
+                    initial_delay=1.0,
+                    max_delay=20.0,
+                    http_status_codes=_TRANSIENT_CODES,
+                )
+            )
+        )
+        # Set by Agent so a quota wait shows up in the trace / UI timeline.
+        self.notify: Callable[[dict], None] | None = None
+        self._sleep = time.sleep
         self._model = model
         # Gemini 3 attaches `thought_signature`s to function-call parts that
         # must be sent back verbatim on the next turn. The loop rebuilds
@@ -228,13 +322,127 @@ class GeminiModel(Model):
             contents.append(types.Content(role="user", parts=parts))
         return contents
 
+    # --- quota-aware retry ------------------------------------------------
+    def _with_quota_retry(self, call: Callable[[], Any], can_retry: Callable[[], bool] = bool):
+        """Run `call`; on a 429, wait what Google asks (RetryInfo) and retry.
+        `can_retry()` is checked first — a stream that already showed the user
+        text must not start over."""
+        from google.genai import errors
+
+        for attempt in range(GEMINI_QUOTA_RETRIES + 1):
+            try:
+                return call()
+            except errors.ClientError as exc:
+                if exc.code != 429:
+                    raise
+                wait = _quota_wait(exc)
+                if wait is None or attempt == GEMINI_QUOTA_RETRIES or not can_retry():
+                    raise QuotaExhausted(
+                        "The Gemini API quota for this key is used up for now.",
+                        retry_after=_retry_delay(exc),
+                    ) from exc
+                if self.notify is not None:
+                    self.notify({"type": "waiting", "reason": "rate_limited",
+                                 "seconds": round(wait)})
+                self._sleep(wait)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    # --- model fallback on overload ------------------------------------------
+    def _with_fallback(self, call: Callable[[], Any], can_retry: Callable[[], bool] = bool):
+        """Run `call`; if the current model is unusable — overloaded (503
+        after the SDK's retries) or out of quota (quotas are per model) —
+        trip its circuit breaker and retry on the next model in the chain.
+        Never mid-loop: once this agent has replayable turns from one model,
+        its thought signatures don't transfer to another."""
+        from google.genai import errors
+
+        while True:
+            try:
+                return call()
+            except (errors.ServerError, QuotaExhausted) as exc:
+                if isinstance(exc, errors.ServerError) and exc.code != 503:
+                    raise
+                nxt = self._chain.index(self._model) + 1 if self._model in self._chain else None
+                if self._raw_turns or not can_retry() or nxt is None or nxt >= len(self._chain):
+                    raise
+                quota = isinstance(exc, QuotaExhausted)
+                _mark_overloaded(self._model, exc.retry_after if quota else None)
+                if self.notify is not None:
+                    self.notify({"type": "fallback",
+                                 "reason": "quota_exhausted" if quota else "overloaded",
+                                 "from_model": self._model, "to_model": self._chain[nxt]})
+                self._model = self._chain[nxt]
+
     # --- the turn ------------------------------------------------------
     def turn(self, system: str, messages: list[dict], tools: list[dict]) -> ModelResponse:
-        resp = self._client.models.generate_content(
-            model=self._model,
-            contents=self._contents(messages),
-            config=self._config(system, tools),
+        contents, config = self._contents(messages), self._config(system, tools)
+        resp = self._with_fallback(
+            lambda: self._with_quota_retry(
+                lambda: self._client.models.generate_content(
+                    model=self._model, contents=contents, config=config
+                ),
+                can_retry=lambda: True,
+            ),
+            can_retry=lambda: True,
         )
+        return self._interpret(resp)
+
+    def stream_turn(
+        self,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        on_text: Callable[[str], None],
+    ) -> ModelResponse:
+        """`generate_content_stream`: forward answer text as each chunk lands,
+        then reassemble the chunks into one response and interpret it exactly
+        like a non-streamed turn. Every raw part is kept, in order, so a
+        function call's thought signature survives for replay."""
+        from google.genai import types
+
+        contents, config = self._contents(messages), self._config(system, tools)
+        parts: list = []
+        state: dict[str, Any] = {"finish": None, "usage": None, "feedback": None}
+        emitted = False
+
+        def consume() -> None:
+            nonlocal emitted
+            parts.clear()
+            for chunk in self._client.models.generate_content_stream(
+                model=self._model, contents=contents, config=config
+            ):
+                state["usage"] = getattr(chunk, "usage_metadata", None) or state["usage"]
+                state["feedback"] = getattr(chunk, "prompt_feedback", None) or state["feedback"]
+                for cand in (getattr(chunk, "candidates", None) or [])[:1]:
+                    state["finish"] = getattr(cand, "finish_reason", None) or state["finish"]
+                    chunk_parts = (cand.content.parts if cand.content else None) or []
+                    for part in chunk_parts:
+                        parts.append(part)
+                        if part.text and not part.thought and part.function_call is None:
+                            emitted = True
+                            on_text(part.text)
+
+        self._with_fallback(
+            lambda: self._with_quota_retry(consume, can_retry=lambda: not emitted),
+            can_retry=lambda: not emitted,
+        )
+        finish, usage, feedback = state["finish"], state["usage"], state["feedback"]
+
+        candidates = []
+        if parts or finish is not None:
+            candidates = [
+                types.Candidate(
+                    content=types.Content(role="model", parts=parts),
+                    finish_reason=finish,
+                )
+            ]
+        return self._interpret(
+            types.GenerateContentResponse(
+                candidates=candidates, usage_metadata=usage, prompt_feedback=feedback
+            )
+        )
+
+    def _interpret(self, resp) -> ModelResponse:
         usage = getattr(resp, "usage_metadata", None)
         in_tok = getattr(usage, "prompt_token_count", None) or 0
         out_tok = (getattr(usage, "candidates_token_count", None) or 0) + (
@@ -283,12 +491,40 @@ class GeminiModel(Model):
             self._raw_turns[tool_reqs[0].id] = cand.content
             stop = "tool_use"
         return ModelResponse(
-            text="\n".join(text_parts).strip(),
+            # Text parts are fragments of one string (streaming splits them
+            # anywhere), so they concatenate as-is.
+            text="".join(text_parts).strip(),
             tool_requests=tool_reqs,
             stop_reason=stop,
             input_tokens=in_tok,
             output_tokens=out_tok,
         )
+
+
+def _retry_delay(exc) -> float | None:
+    """Google's RetryInfo delay on an error, in seconds, if present."""
+    body = exc.details if isinstance(exc.details, dict) else {}
+    for d in (body.get("error") or {}).get("details") or []:
+        if str(d.get("@type", "")).endswith("RetryInfo"):
+            try:
+                return float(str(d.get("retryDelay", "")).rstrip("s"))
+            except ValueError:
+                return None
+    return None
+
+
+def _quota_wait(exc) -> float | None:
+    """Seconds to wait before retrying a 429, from Google's RetryInfo; None
+    when waiting won't help (a per-day quota, no hint, or longer than the
+    cap)."""
+    body = exc.details if isinstance(exc.details, dict) else {}
+    delay, daily = _retry_delay(exc), False
+    for d in (body.get("error") or {}).get("details") or []:
+        if str(d.get("@type", "")).endswith("QuotaFailure"):
+            daily = any("PerDay" in str(v.get("quotaId", "")) for v in d.get("violations", []))
+    if daily or delay is None or delay > GEMINI_MAX_QUOTA_WAIT_S:
+        return None
+    return delay + 1.0  # their estimate is to the second; don't arrive early
 
 
 _LOCAL_ID_PREFIX = "gemini-call-"

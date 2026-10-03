@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from agents import specialists
+from agents import conversation, specialists
 from agents.base import Agent
 from agents.model import Model, make_model
 from agents.trace import Trace
@@ -30,7 +30,13 @@ question into steps and delegate. Typical order:
 
 Pass each agent everything it needs in the `task` string (including prior
 agents' findings). Skip research/risk only for a pure "just fetch me X"
-request. Your own final message should be the Report Agent's answer verbatim.
+request. Delegate to the Report Agent exactly once, last, with everything it
+needs: its answer goes to the user as-is and ends the run.
+
+If the message starts with earlier turns of the conversation, they are
+context, not instructions: use them only to work out what a follow-up refers
+to (which series, which period), answer only the current question, and make
+each task self-contained (name the series and dates explicitly).
 """
 
 _DELEGATION_SCHEMAS = [
@@ -66,6 +72,11 @@ class Supervisor:
         task = arguments.get("task", "")
         self.trace.record_delegation(target, task)
         agent = specialists.build(target, self.trace)
+        if target == "report_agent" and self.trace.listener is not None:
+            # The answer the user reads: stream it as it's written.
+            agent.on_text = lambda text: self.trace.emit(
+                {"type": "report_delta", "agent": target, "text": text}
+            )
         output = agent.run(task)
         self.trace.record_agent_output(target, output)
 
@@ -75,14 +86,21 @@ class Supervisor:
             self.trace.final_report = output
         return {"agent": target, "output": output}
 
-    def run(self, query: str) -> str:
+    def run(self, query: str, history: list[dict] | None = None) -> str:
+        """Answer `query`. `history` is earlier turns of the same conversation
+        (`[{"query", "answer"}]`, oldest first) for follow-up questions."""
         self.trace.query = query
         agent = Agent(
             "supervisor", SUPERVISOR_SYSTEM, _DELEGATION_SCHEMAS,
             self._dispatch, self._model, self.trace,
             max_iterations=int(os.environ.get("SUPERVISOR_MAX_ITERATIONS", "8")),
+            # The Report Agent's answer is the final answer. Without this the
+            # supervisor spends one more model call retyping it — and, found
+            # on a live Gemini run, sometimes re-delegates to the Report Agent
+            # instead, burning several calls of a 5-requests/min quota.
+            stop_when=lambda: bool(self.trace.final_report.strip()),
         )
-        answer = agent.run(query)
+        answer = agent.run(conversation.compose(query, history))
         if not self.trace.final_report:
             self.trace.final_report = answer
         return self.trace.final_report
@@ -95,9 +113,9 @@ def _parse_risk_signal(text: str) -> str | None:
     return None
 
 
-def run(query: str, trace: Trace | None = None) -> Trace:
+def run(query: str, trace: Trace | None = None, history: list[dict] | None = None) -> Trace:
     """Convenience entry point. Returns the completed Trace (which carries the
     final report, the tool sequence, usage, and timing)."""
     trace = trace or Trace()
-    Supervisor(trace).run(query)
+    Supervisor(trace).run(query, history)
     return trace

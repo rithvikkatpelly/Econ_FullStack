@@ -8,7 +8,11 @@ instead of a hand-wavy claim.
 """
 
 import os
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,12 +32,25 @@ def estimate_tokens(payload: str) -> int:
 class SessionBudget:
     limit_tokens: int = int(os.environ.get("SESSION_TOKEN_BUDGET", "50000"))
     used_tokens: int = field(default=0)
+    # The process-wide budget is hit by concurrent HTTP requests; check and
+    # record must happen as one step or two callers can both "fit".
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def would_exceed(self, additional_tokens: int) -> bool:
         return (self.used_tokens + additional_tokens) > self.limit_tokens
 
+    def try_record(self, tool_name: str, tokens: int, note: str = "") -> bool:
+        """Record `tokens` if they fit; return whether they did. Atomic."""
+        with self._lock:
+            if self.would_exceed(tokens):
+                return False
+            self.used_tokens += tokens
+        self._log(tool_name, tokens, note)
+        return True
+
     def record(self, tool_name: str, tokens: int, note: str = "") -> None:
-        self.used_tokens += tokens
+        with self._lock:
+            self.used_tokens += tokens
         self._log(tool_name, tokens, note)
 
     def remaining(self) -> int:
@@ -51,9 +68,36 @@ class SessionBudget:
             pass  # logging is best-effort, never block a tool call on it
 
 
-# One shared budget per server process. In a multi-session deployment this
-# would be keyed by session ID instead of being a module-level singleton.
+# One shared budget per server process — what the MCP server and the HTTP
+# tool endpoints spend from. An agent run gets its own instead (run_budget
+# below), so concurrent questions can't drain each other or this one.
 budget = SessionBudget()
+
+# The budget of the run executing in this context, if any. A ContextVar so it
+# follows the run into worker threads (asyncio.to_thread copies the context)
+# without leaking into unrelated requests on other threads.
+_run_budget: ContextVar[SessionBudget | None] = ContextVar("run_budget", default=None)
+
+
+def current_budget() -> SessionBudget:
+    """The budget a tool call made right here should spend from."""
+    return _run_budget.get() or budget
+
+
+@contextmanager
+def run_budget(limit_tokens: int | None = None) -> Iterator[SessionBudget]:
+    """Give everything inside the block its own fresh budget.
+
+    The HTTP agent endpoints wrap each question in this, so one user's large
+    query can't push another's over the limit, and neither touches the
+    process-wide budget the tool endpoints use.
+    """
+    scoped = SessionBudget(limit_tokens=limit_tokens or SessionBudget().limit_tokens)
+    token = _run_budget.set(scoped)
+    try:
+        yield scoped
+    finally:
+        _run_budget.reset(token)
 
 
 def reset_budget() -> None:
@@ -73,27 +117,26 @@ def guard_or_shrink(tool_name: str, payload: str, shrink_fn=None) -> tuple[str, 
     If it still doesn't fit, return a structured warning instead of the
     raw payload so the model can narrow the request.
     """
+    active = current_budget()
     tokens = estimate_tokens(payload)
 
-    if not budget.would_exceed(tokens):
-        budget.record(tool_name, tokens)
-        return payload, {"estimated_tokens": tokens, "budget_remaining": budget.remaining()}
+    if active.try_record(tool_name, tokens):
+        return payload, {"estimated_tokens": tokens, "budget_remaining": active.remaining()}
 
     if shrink_fn is not None:
         shrunk = shrink_fn(payload)
         shrunk_tokens = estimate_tokens(shrunk)
-        if not budget.would_exceed(shrunk_tokens):
-            budget.record(tool_name, shrunk_tokens, note="shrunk")
+        if active.try_record(tool_name, shrunk_tokens, note="shrunk"):
             return shrunk, {
                 "estimated_tokens": shrunk_tokens,
-                "budget_remaining": budget.remaining(),
+                "budget_remaining": active.remaining(),
                 "note": "Result was shrunk to fit the session token budget.",
             }
 
     return "", {
         "error": "session_budget_exceeded",
         "estimated_tokens": tokens,
-        "budget_remaining": budget.remaining(),
+        "budget_remaining": active.remaining(),
         "suggestion": "Narrow the date range, reduce the number of series, "
                        "or start a new session.",
     }
