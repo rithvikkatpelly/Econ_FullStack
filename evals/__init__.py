@@ -1,7 +1,8 @@
 """Evaluation harness for the econ-data multi-agent system.
 
 Run it:  python -m evals            (offline stub backend, no key needed)
-         AGENT_BACKEND=anthropic python -m evals   (live, costs money)
+         AGENT_BACKEND=gemini python -m evals      (live Gemini, costs money)
+         AGENT_BACKEND=anthropic python -m evals   (live Claude, costs money)
 
 It replays a fixed set of questions (evals/dataset.jsonl) through the
 supervisor and grades each run against an expected tool-call sequence and

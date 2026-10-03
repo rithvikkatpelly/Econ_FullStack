@@ -9,6 +9,8 @@ pydantic>=2.6.0
 # Multi-agent orchestrator's live backend (AGENT_BACKEND=anthropic).
 # The default stub backend, the evals, and the tests need none of this.
 anthropic>=0.40.0
+# ... and AGENT_BACKEND=gemini (Gemini API or Vertex AI).
+google-genai>=1.50.0
 
 # HTTP interface (backend/app) — a second, independently deployable surface
 # over the same src/tools.py logic the MCP server uses. The MCP server itself

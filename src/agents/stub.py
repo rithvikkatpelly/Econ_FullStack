@@ -11,8 +11,8 @@ Concept → series resolution comes from the shared catalog (src/catalog.py),
 not a keyword table living here. The remaining rules (date-range parsing, when
 to search vs. fetch, the delegation order) are intentionally simple. They
 exercise tool *selection* and *orchestration* — what the evals measure — and
-are not a substitute for the model's analysis. `AGENT_BACKEND=anthropic` runs
-the real thing.
+are not a substitute for the model's analysis. `AGENT_BACKEND=gemini` (or
+`anthropic`) runs the real thing.
 """
 
 from __future__ import annotations
@@ -223,8 +223,8 @@ def _plan_risk_agent(messages: list[dict]) -> ModelResponse:
 
     return _text(
         f"RISK_SIGNAL: {signal}\n"
-        f"Basis (offline linear read): {basis}. Run AGENT_BACKEND=anthropic for a "
-        "model-generated analysis grounded in the full series."
+        f"Basis (offline linear read): {basis}. Run AGENT_BACKEND=gemini (or "
+        "anthropic) for a model-generated analysis grounded in the full series."
     )
 
 
@@ -235,8 +235,8 @@ def _plan_report_agent(messages: list[dict]) -> ModelResponse:
     signal = m.group(1) if m else "not assessed"
     body = (
         "Based on the fetched FRED series and the team's analysis, here is the "
-        "answer to your question. (Offline stub narrative — the Anthropic "
-        "backend produces the full write-up.)"
+        "answer to your question. (Offline stub narrative — a live backend, "
+        "Gemini or Claude, produces the full write-up.)"
     )
     evidence = "\n".join(f"  - {sid}" for sid in ids) or "  - (none)"
     return _text(f"{body}\n\nEvidence\nSeries used:\n{evidence}\nRisk signal: {signal}")

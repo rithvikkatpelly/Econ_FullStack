@@ -79,7 +79,7 @@ for the whole suite.
 
 > The `stub` backend uses a deterministic offline planner, so its scores are a
 > regression fence on tool-contract and orchestration logic, not a measure of
-> model quality. Run `AGENT_BACKEND=anthropic python -m evals` for that.
+> model quality. Run `AGENT_BACKEND=gemini python -m evals` (or `anthropic`) for that.
 
 ## Per-case results
 
