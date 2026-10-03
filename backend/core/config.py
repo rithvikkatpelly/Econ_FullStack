@@ -15,7 +15,8 @@ variable, sourced from Secret Manager via the `--set-secrets` flag in
 ``.github/workflows/deploy.yml`` (`FRED_API_KEY=<secret-name>:latest`), so it
 resolves at step (1) with no code path or config difference between the two —
 only where the value physically comes from changes. See DEPLOYMENT.md for the
-one-time Secret Manager setup.
+one-time Secret Manager setup. The Gemini agent backend follows the same rule:
+``GEMINI_API_KEY`` from Secret Manager, or Vertex AI via the service account.
 """
 
 from __future__ import annotations
@@ -48,6 +49,40 @@ class Settings(BaseSettings):
     # on every /observations and /compare call — identical to the MCP path.
     session_token_budget: int = 50000
 
+    # --- Agent (POST /agent/ask, /agent/stream) ---------------------------
+    # Which model drives the supervisor + specialists: "stub" (deterministic,
+    # free, the default), "gemini", or "anthropic". See src/agents/model.py.
+    agent_backend: str = "stub"
+    # Gemini: either an API key (Gemini API) ...
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.8-flash"
+    # ... or Vertex AI with the runtime service account (no key at all). The
+    # google-genai SDK reads these three straight from the environment.
+    google_genai_use_vertexai: str = ""
+    google_cloud_project: str = ""
+    google_cloud_location: str = ""
+    # Abuse/spend controls on the agent endpoints only. A live run is several
+    # model calls, so these are far tighter than the per-tool limits.
+    agent_rate_limit_per_min: float = 6
+    agent_rate_limit_burst: float = 3
+    agent_max_concurrent_runs: int = 2
+    agent_max_query_chars: int = 500
+
+    @property
+    def agent_model_configured(self) -> bool:
+        """Whether the selected backend has credentials (never the value)."""
+        backend = self.agent_backend.strip().lower()
+        if backend == "gemini":
+            return bool(
+                self.gemini_api_key
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("GOOGLE_API_KEY")
+                or self.google_genai_use_vertexai.lower() in {"1", "true"}
+            )
+        if backend == "anthropic":
+            return bool(os.environ.get("ANTHROPIC_API_KEY"))
+        return True  # the stub needs nothing
+
     # --- API ----------------------------------------------------------
     api_title: str = "Econ Data API"
     api_version: str = "0.1.0"
@@ -71,6 +106,12 @@ class Settings(BaseSettings):
             "FRED_API_KEY": self.fred_api_key,
             "FRED_OFFLINE": self.fred_offline,
             "SESSION_TOKEN_BUDGET": str(self.session_token_budget),
+            "AGENT_BACKEND": self.agent_backend,
+            "GEMINI_API_KEY": self.gemini_api_key,
+            "GEMINI_MODEL": self.gemini_model,
+            "GOOGLE_GENAI_USE_VERTEXAI": self.google_genai_use_vertexai,
+            "GOOGLE_CLOUD_PROJECT": self.google_cloud_project,
+            "GOOGLE_CLOUD_LOCATION": self.google_cloud_location,
         }.items():
             if value != "" and name not in os.environ:
                 os.environ[name] = value

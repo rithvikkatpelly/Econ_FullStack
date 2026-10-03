@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import fred_client
 import tools
+from app import agent
 from app.schemas import (
     CompareRequest,
     MetadataResponse,
@@ -82,6 +83,9 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+app.include_router(agent.router)
 
 
 @app.middleware("http")
@@ -163,6 +167,10 @@ def health() -> dict:
       synthetic fixture or the live FRED API — the two can disagree, e.g. a
       key is set but FRED_OFFLINE=1 forces the fixture anyway.
 
+    - ``agent_backend`` / ``agent_model_configured``: which model drives
+      ``/agent/*`` and whether its credentials resolved (a Gemini key, or
+      Vertex AI mode) — again never the value.
+
     There's no database in this project (backend/app is stateless — FRED is
     the only backing store), so there's nothing else to check here.
     """
@@ -170,6 +178,8 @@ def health() -> dict:
         "status": "ok",
         "fred_api_key_configured": bool(os.environ.get("FRED_API_KEY")),
         "offline": fred_client._offline(),
+        "agent_backend": agent.backend_name(),
+        "agent_model_configured": settings.agent_model_configured,
     }
 
 

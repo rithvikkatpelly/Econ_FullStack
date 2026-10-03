@@ -8,3 +8,7 @@ uvicorn[standard]>=0.29.0
 pydantic>=2.6.0
 pydantic-settings>=2.2.0
 httpx>=0.27.0
+
+# Agent endpoints (/agent/*) with AGENT_BACKEND=gemini. Imported lazily, so
+# the stub backend never touches it.
+google-genai>=1.50.0
