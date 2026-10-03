@@ -48,7 +48,29 @@ reads as a development story rather than one drop.
       Stress-tested the injection defense against a source built for
       adversarial text — 5/5 passing (`tests/test_news_injection.py`)
 
+- [x] **Gemini full stack** — `GeminiModel` (Google Gen AI SDK, Gemini API
+      or Vertex AI) behind the same `Model` interface, with thought-signature
+      replay; `Trace` emits progress events; `POST /agent/ask` +
+      `POST /agent/stream` (SSE) run the supervisor over HTTP with a
+      per-client rate limit, run cap, and masked errors; a React "Ask the
+      agent" section draws the live activity timeline; Cloud Run deploy runs
+      the agents on Gemini via Vertex AI as the service account (no stored key)
+- [x] **Streaming the supervisor's progress** (per-delegation events) — the
+      `Trace` listener above
+- [x] CI green again: repo root on pytest's `pythonpath` (bare `pytest`
+      couldn't import `evals`), and the deploy job skips instead of failing
+      until GCP is configured
+
 ### Next
+
+- [ ] Live Gemini eval run in CI (gated, on a schedule, with a spend cap) —
+      `AGENT_BACKEND=gemini python -m evals` against a Vertex AI project
+- [ ] Per-run token budget (contextvar) so concurrent `/agent/*` runs can't
+      drain each other through the process-global `SESSION_TOKEN_BUDGET`
+- [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
+- [ ] Export `Trace` events as OpenTelemetry spans to Cloud Trace
+- [ ] Multi-turn follow-ups in "Ask the agent" (pass prior turns as context)
+- [ ] Stream the report text token-by-token (Gemini `generate_content_stream`)
 
 - [ ] Wire `FetchRequest.search_text` through the Data Agent (act on the
       "route via search_series" routing decision, don't just record it)
@@ -62,7 +84,6 @@ reads as a development story rather than one drop.
       `CACHE_PATH` to persist across restarts.
 - [ ] Expand the supervisor eval dataset toward 50 cases; add adversarial queries
 - [ ] Live-backend eval run in CI (gated, on a schedule, with a spend cap)
-- [ ] Streaming the supervisor's progress (per-delegation events)
 - [ ] Deploy the MCP server over HTTP with per-session rate-limit keys
 - [ ] Observability: structured spans per agent, exported to a trace viewer
 - [ ] A short screen recording in the README

@@ -13,6 +13,11 @@ The same four tools are exposed two ways: as an **MCP server** you can point
 Claude Desktop at, and as the tool surface for an **in-process multi-agent
 orchestrator**. Both call one implementation, so the two can't drift.
 
+It is also a **Google full-stack app**: a React front end and a FastAPI back
+end on Cloud Run, with the multi-agent pipeline running on **Gemini** (via
+Vertex AI, no stored model key) and streaming its progress to the browser as
+a live activity timeline — see [Ask the agent](#ask-the-agent-gemini-full-stack).
+
 It runs end to end with **no API key** — a deterministic planner stands in for
 the model and a synthetic fixture stands in for FRED — which is what lets the
 evaluation suite be hermetic and reproducible.
@@ -35,6 +40,7 @@ evaluation suite be hermetic and reproducible.
 - [Offline by default, live when you want it](#offline-by-default-live-when-you-want-it)
 - [Running it live](#running-it-live)
 - [Run the API](#run-the-api)
+  - [Ask the agent (Gemini full stack)](#ask-the-agent-gemini-full-stack)
 - [Deployment](#deployment)
 - [Configuration](#configuration)
 - [Project layout](#project-layout)
@@ -51,6 +57,7 @@ evaluation suite be hermetic and reproducible.
 | **AI safety** | Input validation, prompt-injection containment (FRED metadata *and* adversarial news headlines), secret redaction, least-privilege tools, rate limiting, audit log — [§5](#5-security), [Cross-source security](#cross-source-security), [SECURITY.md](SECURITY.md) |
 | **Context / cost engineering** | Cache-friendly prompt layout, result shaping, a pre-return token budget with a shrink fallback, per-role effort — [§4](#4-context-and-cost) |
 | **Evaluation** | 20-case dataset with expected tool-call sequences, six scored metrics, generated report, CI gate — [§6](#6-evaluation) |
+| **Full-stack delivery** | React + FastAPI on Cloud Run, Gemini through Vertex AI, agent progress streamed over SSE into a live activity timeline, CI/CD with keyless Workload Identity Federation — [Ask the agent](#ask-the-agent-gemini-full-stack), [DEPLOYMENT.md](DEPLOYMENT.md) |
 | **Production hygiene** | Hermetic tests, deterministic offline mode, `pyproject` + ruff, CI on every push |
 
 Architecture diagram and the guardrail-by-layer table:
@@ -303,12 +310,23 @@ agent only ever talks to a `Model`:
   adaptive thinking, and `output_config.effort` tuned per role (`low` for the
   leaf specialists doing bounded work, `medium` for the supervisor and report
   writer). Handles `stop_reason == "refusal"` explicitly.
+- **`GeminiModel`** — a real Gemini function-calling turn through the
+  Google Gen AI SDK (`google-genai`), against the Gemini API
+  (`GEMINI_API_KEY`) or Vertex AI (`GOOGLE_GENAI_USE_VERTEXAI=true`, which on
+  Cloud Run authenticates as the service account). Defaults to
+  `gemini-3.8-flash`. The per-role effort maps onto Gemini's
+  `thinking_level`; automatic function calling is **off**, so every tool
+  call still goes through `tools.call_tool` (validation, cost guardrail,
+  audit log) and lands in the same `Trace`. The loop's history is
+  Anthropic-shaped, so the model translates it to Gemini `Content` each turn
+  — and replays its own earlier turns verbatim, because Gemini 3 requires
+  the `thought_signature` on a function call to come back unchanged.
 - **`StubModel`** — defers to [`agents/stub.py`](src/agents/stub.py), a
   deterministic planner: catalog-driven series resolution, regex date-range
   parsing, and a fixed delegation policy. It exists so evals, CI, and the demo
   run with no key and produce identical output every time.
 
-Same loop code either way; select with `AGENT_BACKEND=stub|anthropic`.
+Same loop code every way; select with `AGENT_BACKEND=stub|gemini|anthropic`.
 
 > **What the stub is and isn't.** It's good enough to exercise tool
 > *selection* and *orchestration* — which tool, which arguments, which
@@ -501,7 +519,8 @@ this is a **regression fence** — break the catalog, the date parser, the
 delegation policy, a tool schema, or the injection wrapper and a case goes
 red. `python -m evals` exits non-zero on any failure, and CI runs it on every
 push. It is *not* a measurement of model quality; for that, run
-`AGENT_BACKEND=anthropic python -m evals` (needs a key, costs money). The
+`AGENT_BACKEND=gemini python -m evals` (or `anthropic`; needs a key or
+Vertex AI access, costs money). The
 generated [`evals/REPORT.md`](evals/REPORT.md) has the per-case table and a
 projected API cost.
 
@@ -577,8 +596,9 @@ flaky and never spend money.
 ## Running it live
 
 1. Free FRED key: <https://fred.stlouisfed.org/docs/api/api_key.html>
-2. `cp .env.example .env`, fill in `FRED_API_KEY` (and `ANTHROPIC_API_KEY` +
-   `AGENT_BACKEND=anthropic` for the real orchestrator)
+2. `cp .env.example .env`, fill in `FRED_API_KEY` (and, for the real
+   orchestrator, `AGENT_BACKEND=gemini` + `GEMINI_API_KEY` — or
+   `AGENT_BACKEND=anthropic` + `ANTHROPIC_API_KEY`)
 3. `pip install -r requirements.txt`
 
 **As an MCP server for Claude Desktop** — add to `claude_desktop_config.json`:
@@ -602,7 +622,7 @@ cheaply. Then ask Claude *"Compare CPI and the unemployment rate over the last
 **As the multi-agent orchestrator**:
 
 ```bash
-AGENT_BACKEND=anthropic python examples/demo.py \
+AGENT_BACKEND=gemini python examples/demo.py \
   "Analyze whether inflation and unemployment trends indicate rising recession risk."
 ```
 
@@ -650,7 +670,9 @@ uvicorn app.main:app --reload        # http://127.0.0.1:8000  (docs at /docs)
 | `POST /observations` | `get_series_observations` | `{"series_id","start_date","end_date","frequency"}` |
 | `POST /compare` | `compare_series` | `{"series_ids":[…≤4],"start_date","end_date","frequency"}` |
 | `GET /metadata/{series_id}` | `get_series_metadata` | — |
-| `GET /health` | — | reports `offline` (fixture) vs live |
+| `POST /agent/ask` | the whole supervisor pipeline | `{"query": "Compare CPI and unemployment since 2019"}` → full trace JSON |
+| `POST /agent/stream` | the same, streamed | same body → `text/event-stream` (see below) |
+| `GET /health` | — | reports `offline` (fixture) vs live, and the agent backend |
 
 ```bash
 curl -X POST http://127.0.0.1:8000/observations \
@@ -664,6 +686,64 @@ curl -X POST http://127.0.0.1:8000/observations \
 preserved under `detail`. Runs offline against the synthetic fixture unless
 `FRED_API_KEY` is set.
 
+### Ask the agent (Gemini full stack)
+
+The tool endpoints expose one tool per call. `/agent/*` exposes the whole
+multi-agent pipeline — the shape of Google's Gemini full-stack quickstart
+(React UI ⇄ streaming FastAPI ⇄ Gemini-driven agents), built on this
+project's own supervisor, tools and guardrails rather than a framework:
+
+```
+React "Ask the agent" ──POST /agent/stream──▶ FastAPI (backend/app/agent.py)
+     ▲ activity timeline                          │ runs Supervisor in a worker thread
+     └──────── server-sent events ◀── Trace.emit ─┤
+                                                  ▼
+                         Supervisor ─▶ Economic Data / Research / Risk / Report
+                              (GeminiModel → Vertex AI)        │
+                                                    src/tools.py → FRED
+```
+
+**How the progress gets out.** `Trace` — already the single record of a
+run, the thing the evals grade — got an optional `listener`. Every
+delegation, specialist output and tool call it records is also pushed to
+the listener as a small JSON event; the API turns those into SSE frames.
+No agent code knows streaming exists.
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/agent/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Compare CPI and unemployment since 2019 and explain the relationship."}'
+```
+
+```
+data: {"type": "start", "query": "Compare CPI and unemployment since 2019 …", "backend": "gemini"}
+data: {"type": "delegation", "agent": "economic_data_agent", "task": "…"}
+data: {"type": "tool_call", "agent": "economic_data_agent", "tool": "compare_series", "arguments": {…}, "ok": true, "latency_ms": 412.0}
+data: {"type": "agent_output", "agent": "economic_data_agent", "output": "Data fetched: …"}
+…
+data: {"type": "final", "final_report": "…", "series_used": ["CPIAUCSL", "UNRATE"], "risk_signal": "easing", …}
+```
+
+Design choices worth calling out:
+
+- **Tool results never enter the stream.** Events carry which tool ran, its
+  arguments, ok/error and latency — not the payload. Raw FRED notes and news
+  text (untrusted, see [§5](#5-security)) therefore have no path to the
+  browser through this feed; `test_stream_never_carries_tool_results` runs
+  the poisoned `INJTEST` series and checks.
+- **POST + `fetch` streaming, not `EventSource`.** `EventSource` can only
+  GET, which would put the question in the URL and in every access log.
+- **Spend controls**, since each question is several model calls: a
+  per-client token bucket (default 6/min, burst 3, keyed on Cloud Run's
+  `X-Forwarded-For`), a cap on concurrent runs per instance (503
+  `agent_busy`), and a 500-character query limit. Failures come back as a
+  structured `agent_error` with the exception text withheld (provider
+  errors can echo request details); the operator gets it in the log.
+- **Disconnects don't leak slots.** A run's slot is released when the run
+  actually ends, not when the socket closes.
+
+![Ask the agent — completed run with the activity timeline expanded](docs/images/ui-agent.png)
+
 ### Web UI
 
 `frontend/` is a React + Vite + TypeScript single page that calls the API
@@ -671,6 +751,11 @@ over HTTP. It turns the four tools into something a non-developer can use:
 
 ![Landing page — hero carousel of live indicator cards](docs/images/ui-home.png)
 
+- **Ask the agent** — type a question (or pick an example) and watch the
+  supervisor hand work to each specialist, every FRED call with its
+  arguments and latency, then a grounded answer whose series chips open the
+  chart explorer. The timeline collapses to "11 steps · 3.2 s" when done;
+  *Stop* aborts the stream.
 - **Hero carousel** of seven headline indicators (unemployment, CPI, core CPI,
   core PCE, fed funds, 10-year yield, GDP), each with a sparkline, the latest
   reading and its change. Click the centre card to chart it; `←`/`→` browse.
@@ -715,7 +800,11 @@ backend's build context, since the image needs both `src/` and `backend/`),
 and `.github/workflows/deploy.yml` builds both, pushes them to Artifact
 Registry, and deploys both to **Google Cloud Run** on every push to `main` —
 authenticating with Workload Identity Federation, no long-lived key in
-GitHub. Full one-time setup (GCP project, Artifact Registry, Secret Manager,
+GitHub. The backend's agents run on **Gemini through Vertex AI** as the Cloud
+Run runtime service account (`roles/aiplatform.user`), so there's no model
+key to store; a Gemini API key from Secret Manager works too. Until the GCP
+variables exist the deploy job is skipped rather than failed. Full one-time
+setup (GCP project, Artifact Registry, Secret Manager, Vertex AI,
 service accounts, WIF, the exact GitHub secrets/variables to add) is in
 [`DEPLOYMENT.md`](DEPLOYMENT.md); nothing there has been run yet — no live
 deployment exists for this repo today.
@@ -766,7 +855,10 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 | `FRED_OFFLINE` | auto | `1`/`0` to force the synthetic fixture on/off |
 | `NEWS_API_KEY` | — | NewsAPI.org key; its presence also flips `NEWS_OFFLINE` auto → live |
 | `NEWS_OFFLINE` | auto | `1`/`0` to force the synthetic headline bank on/off |
-| `AGENT_BACKEND` | `stub` | `anthropic` for the real model loop |
+| `AGENT_BACKEND` | `stub` | `gemini` or `anthropic` for the real model loop |
+| `GEMINI_API_KEY` | — | Gemini API key, when `AGENT_BACKEND=gemini` without Vertex AI |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | model for the Gemini backend |
+| `GOOGLE_GENAI_USE_VERTEXAI` | — | `true` to call Gemini via Vertex AI (with `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`) |
 | `ANTHROPIC_API_KEY` | — | required when `AGENT_BACKEND=anthropic` |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | model for the live backend |
 | `AGENT_MAX_TOKENS` | `8000` | `max_tokens` per agent turn |
@@ -775,6 +867,9 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 | `TOOL_RATE_LIMIT_PER_MIN` | `120` | MCP-boundary rate limit |
 | `TOOL_RATE_LIMIT_BURST` | `30` | token-bucket capacity |
 | `AUDIT_LOG_PATH` | `audit.log` | where the audit log is written |
+| `AGENT_RATE_LIMIT_PER_MIN` / `_BURST` | `6` / `3` | per-client limit on `/agent/*` |
+| `AGENT_MAX_CONCURRENT_RUNS` | `2` | concurrent agent runs per API process |
+| `AGENT_MAX_QUERY_CHARS` | `500` | longest accepted question |
 | `CORS_ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | comma-separated browser origins allowed to call `backend/app` |
 
 ---
@@ -787,11 +882,13 @@ backend/            HTTP interface — a second, deployable surface over src/too
   app/
     __init__.py     puts ../src on sys.path + loads .env into os.environ (runs before any src import)
     main.py         FastAPI: /health, POST /search, POST /observations, POST /compare, GET /metadata/{id}
+    agent.py        POST /agent/ask + /agent/stream (SSE): the supervisor pipeline over HTTP, rate-limited
     schemas.py      pydantic request/response models mirroring src/tools.py output
-  core/config.py    pydantic-settings, backed by the repo-root .env (FRED key, budget, CORS origins)
+  core/config.py    pydantic-settings, backed by the repo-root .env (FRED key, budget, CORS, agent/Gemini)
 frontend/           React + Vite + TS web app over backend/app: hero carousel, tabbed explorer, charts, CSV export
   src/api/          fetch wrapper + one function per endpoint; types mirror backend/app/schemas.py
-  src/components/   one panel per tool + shared chart/table/error pieces
+  src/api/agent.ts  SSE client for /agent/stream (fetch + stream reader) and the event types
+  src/components/   one panel per tool + AskAgent (chat + activity timeline) + shared pieces
 src/
   server.py         MCP server (FastMCP): 5 tools + 1 resource, rate limit + audit at the boundary
   tools.py          the one implementation of the 5 tools + their Anthropic JSON schemas
@@ -814,9 +911,9 @@ src/
     base.py            the tool-use loop for the older supervisor pipeline below
     supervisor.py      decomposes the question, delegates to specialists
     specialists.py     the four specialist agents and their tool surfaces
-    model.py           AnthropicModel (real Claude) + StubModel (offline)
+    model.py           GeminiModel (Gemini/Vertex AI) + AnthropicModel (Claude) + StubModel (offline)
     stub.py            the deterministic offline planner
-    trace.py           per-run execution trace — what the evals read
+    trace.py           per-run execution trace — what the evals read, and the progress-event source
 evals/
   dataset.jsonl     20 cases: query + expected tool sequence + expected grounding
   runner.py         replay each case through the supervisor, score it
@@ -829,7 +926,7 @@ examples/
   bench_parallel.py  sequential vs. parallel Data Agent latency, real numbers
   measure.py         regenerates docs/measurements.md from the offline fixture
 tests/  catalog, fred + news clients, security (incl. news injection), rate limit, audit,
-        both agent pipelines, routing eval, HTTP API, evals — 122 tests, hermetic, ~1.9s
+        both agent pipelines, Gemini backend, routing eval, HTTP + agent API, evals — 150 tests, hermetic, ~2s
 docs/
   architecture.md   diagrams + the guardrail-by-layer table
   measurements.md   generated context/cost numbers
@@ -840,12 +937,16 @@ docs/
 ## Testing
 
 ```bash
-pytest -q          # 106 tests, no network, deterministic, ~1.5s
+pytest -q          # 150 tests, no network, deterministic, ~2s
 ruff check .       # lint (config in pyproject.toml)
 python -m evals    # the eval suite is also a test (test_evals.py runs it)
 ```
 
 `tests/conftest.py` forces offline FRED, the stub backend, a temp audit-log
 path, and resets the module-level singletons (cache, audit ring, rate-limiter
-buckets, cost budget) between tests. CI ([.github/workflows/ci.yml](.github/workflows/ci.yml))
+buckets, cost budget) between tests. The Gemini backend is tested the same
+way: `test_gemini_model.py` and `test_agent_api.py` drive it with a fake
+client returning real `google.genai` response objects, so the request/response
+translation, thought-signature replay, and SSE stream are all covered with no
+network or key. CI ([.github/workflows/ci.yml](.github/workflows/ci.yml))
 runs lint, tests, and the eval suite on Python 3.11 and 3.12 on every push.

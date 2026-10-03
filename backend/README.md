@@ -10,6 +10,7 @@ backend/
   app/
     __init__.py   puts ../src on sys.path + loads .env into os.environ (must run first)
     main.py       FastAPI app: /health, POST /search, POST /observations, POST /compare, GET /metadata/{id}
+    agent.py      POST /agent/ask + POST /agent/stream (SSE) — the multi-agent supervisor over HTTP
     schemas.py    pydantic request/response models (mirror src/tools.py output)
   core/
     config.py     pydantic-settings, backed by the repo-root .env
@@ -27,7 +28,9 @@ Docs: http://127.0.0.1:8000/docs · see the root README's "Run the API" section
 for `curl` examples and deployment notes.
 
 Runs against the built-in synthetic fixture unless `FRED_API_KEY` is set in
-`../.env`.
+`../.env`. The agent endpoints use the deterministic `stub` planner unless
+`AGENT_BACKEND=gemini` (with `GEMINI_API_KEY`, or Vertex AI via
+`GOOGLE_GENAI_USE_VERTEXAI=true`) — see the root README's "Ask the agent".
 
 ## Docker
 

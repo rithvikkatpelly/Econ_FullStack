@@ -1,7 +1,8 @@
 # Econ Data frontend (`frontend/`)
 
 React + Vite + TypeScript web app over the FastAPI backend (`backend/app`):
-a hero carousel of headline indicators, a tabbed explorer (chart / compare /
+an "Ask the agent" chat that streams the multi-agent pipeline's progress as
+a live activity timeline, a hero carousel of headline indicators, a tabbed explorer (chart / compare /
 find / details), recharts line charts, CSV export. Dark theme with a lime
 accent, responsive down to phone width, keyboard- and screen-reader-friendly.
 
@@ -20,12 +21,14 @@ default already lists `http://localhost:5173`.
 src/
   api/client.ts     fetch wrapper + one function per endpoint
   api/types.ts      mirrors backend/app/schemas.py
+  api/agent.ts      /agent/stream client: POST + fetch stream reader → typed events
   catalog.ts        featured series + example topics (display copy only)
   format.ts         units-aware formatting, change (pts vs %), frequency rules
   dates.ts          range presets (1Y/5Y/10Y/20Y) and helpers
   useSnapshots.ts   hero data: fetched once, cached 6h in localStorage
   explorer.ts       the "open the explorer with X" request type
   components/
+    AskAgent                                                          question box, activity timeline, grounded answer
     Hero, Comparisons, Marquee, HowItWorks, CtaBanner, Nav, Footer   landing sections
     Explorer + Chart/Compare/Search/Details panels                    the tools
     SeriesChart, Sparkline, controls, common                          shared pieces

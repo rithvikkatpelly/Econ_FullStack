@@ -17,6 +17,9 @@ and where it is tested.
 | Inter-agent messages treated as data (worker output serialized toward a reasoning step is wrapped; a provider error body echoed onto a worker result never reaches the final answer as text) | ✅ | [`security.wrap_agent_message`](src/security.py), [`src/agents/presentation_agent.py`](src/agents/presentation_agent.py) `_safe_reason`, [`src/orchestration.py`](src/orchestration.py) `_handoff` | [`tests/test_security.py`](tests/test_security.py) `TestAgentMessageWrapping`, [`tests/test_presentation.py`](tests/test_presentation.py) `test_poisoned_worker_error_string_never_reaches_the_final_answer` |
 | Output validation (final report may only cite series that were actually fetched) | ✅ | [`evals/metrics.py`](evals/metrics.py) `groundedness` | [`tests/test_evals.py`](tests/test_evals.py) |
 | Rate limiting (token bucket at the MCP boundary) | ✅ | [`src/rate_limit.py`](src/rate_limit.py) | [`tests/test_rate_limit.py`](tests/test_rate_limit.py) |
+| Agent HTTP endpoint abuse/spend (per-client token bucket, concurrent-run cap, query length limit, provider errors masked) | ✅ | [`backend/app/agent.py`](backend/app/agent.py) | [`tests/test_agent_api.py`](tests/test_agent_api.py) `test_rate_limit_is_per_client_and_structured`, `test_busy_when_every_slot_is_taken`, `test_failures_are_masked_and_release_the_slot` |
+| Progress stream carries no tool results (names, args, ok/error only — untrusted FRED/news text has no path to the browser) | ✅ | [`src/agents/trace.py`](src/agents/trace.py) `record_tool_call` | `tests/test_agent_api.py` `test_stream_never_carries_tool_results` |
+| Model-side tool execution disabled (Gemini automatic function calling off — every call goes through `tools.call_tool`'s validation, guardrail and audit log) | ✅ | [`src/agents/model.py`](src/agents/model.py) `GeminiModel` | [`tests/test_gemini_model.py`](tests/test_gemini_model.py) `test_config_disables_auto_function_calling_and_passes_json_schema` |
 | Audit logging (append-only JSONL of every tool call, rejection, and rate-limit hit) | ✅ | [`src/audit_log.py`](src/audit_log.py) | `tests/test_audit_log.py` |
 | Loop / runaway protection (per-agent iteration cap, per-session token budget) | ✅ | [`src/agents/base.py`](src/agents/base.py), [`src/cost_tracker.py`](src/cost_tracker.py) | `tests/test_agents.py` `test_agent_loop_has_an_iteration_cap` |
 | Scoped write access (read-only against FRED; only local writes are the two append-only logs) | ✅ | whole codebase | — |
@@ -41,9 +44,16 @@ against the untrusted text and only ever emits the vocabulary word it
 matched — the untrusted string itself has no path into `AnalysisResult.answer`
 regardless of what it contains. See README §5 "Cross-source security".
 
-**Rate limiting is at the boundary only.** The in-process orchestrator is
-trusted code with its own iteration cap; the token bucket guards the one place
-an untrusted client reaches the tools (the MCP server).
+**Rate limiting is at the boundaries only.** The in-process orchestrator is
+trusted code with its own iteration cap; token buckets guard the places an
+untrusted client reaches it — the MCP server (per tool) and the HTTP agent
+endpoints (per client, much tighter, because one question is several billed
+model calls).
+
+**No model key in production.** The deployed API calls Gemini through Vertex
+AI as the Cloud Run runtime service account (`roles/aiplatform.user`), so
+there is no Gemini key to leak, rotate, or redact. A Gemini API key is
+supported as a fallback and, like `FRED_API_KEY`, comes from Secret Manager.
 
 **The audit log is not the usage log.** `usage.log` is cost telemetry;
 `audit.log` answers "what was asked of the system and what did it refuse".

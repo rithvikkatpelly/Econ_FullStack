@@ -35,6 +35,26 @@ User query ───────────▶ │  agents/ (orchestrator)   �
 `tools.py`. That is what keeps the MCP contract and the agent contract from
 drifting.
 
+## The hosted stack (Gemini full stack)
+
+```
+Browser ── React (Cloud Run, nginx)
+   │  POST /agent/stream            ▲ text/event-stream: start · delegation ·
+   ▼                                │   tool_call · agent_output · final|error
+FastAPI (Cloud Run) ─ backend/app/agent.py
+   │  rate limit → run slot → Supervisor in a worker thread
+   │  Trace(listener=push) ──────────┘   (events only — never tool results)
+   ▼
+agents/ (supervisor + 4 specialists) ── GeminiModel ──▶ Vertex AI (Gemini)
+   │                                    (service-account auth, no key)
+   ▼
+tools.py ──▶ fred_client.py ──▶ FRED
+```
+
+`AGENT_BACKEND` picks the model (`gemini` deployed, `stub` in tests and CI,
+`anthropic` also supported); nothing above or below `agents/model.py`
+changes with it.
+
 ## The multi-agent layer
 
 ```
