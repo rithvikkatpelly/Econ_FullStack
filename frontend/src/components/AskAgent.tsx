@@ -31,6 +31,7 @@ interface Turn {
   /** The answer as it streams in (report_delta events), until `final`. */
   draft: string;
   backend?: string;
+  framework?: string;
   result?: AgentResult;
   error?: unknown;
 }
@@ -68,7 +69,10 @@ export function AskAgent({ open }: { open: OpenExplorer }) {
             // Deltas only grow the draft; they aren't steps in the timeline.
             if (event.type === "report_delta") return { ...t, draft: t.draft + event.text };
             const next: Turn = { ...t, events: [...t.events, event] };
-            if (event.type === "start") next.backend = event.backend;
+            if (event.type === "start") {
+              next.backend = event.backend;
+              next.framework = event.framework;
+            }
             if (event.type === "final") return { ...next, status: "done", result: event };
             if (event.type === "error") return { ...next, status: "error", error: new ApiError(502, event, "") };
             return next;
@@ -217,6 +221,7 @@ function TurnView({ turn, open }: { turn: Turn; open: OpenExplorer }) {
             ))}
             {turn.result.risk_signal && <RiskBadge signal={turn.result.risk_signal} />}
             <span className="mono muted answer-meta">
+              {turn.framework ? `${turn.framework} · ` : ""}
               {turn.backend}
               {turn.result.input_tokens + turn.result.output_tokens > 0 &&
                 ` · ${(turn.result.input_tokens + turn.result.output_tokens).toLocaleString()} tokens`}
@@ -276,7 +281,8 @@ function describe(e: AgentEvent): ReactNode {
     case "fallback":
       return (
         <span className="muted">
-          <span className="mono">{e.from_model}</span> is overloaded — switched to{" "}
+          <span className="mono">{e.from_model}</span>{" "}
+          {e.reason === "quota_exhausted" ? "is out of quota" : "is overloaded"} — switched to{" "}
           <span className="mono">{e.to_model}</span>
         </span>
       );

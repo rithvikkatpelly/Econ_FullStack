@@ -11,7 +11,7 @@ interface Timed {
 }
 
 export type AgentEvent =
-  | ({ type: "start"; query: string; backend: string; follow_up: boolean } & Timed)
+  | ({ type: "start"; query: string; backend: string; framework?: string; follow_up: boolean } & Timed)
   | ({ type: "delegation"; agent: AgentName; task: string } & Timed)
   | ({
       type: "tool_call";
@@ -26,7 +26,7 @@ export type AgentEvent =
   | ({ type: "report_delta"; agent: AgentName; text: string } & Timed)
   | ({ type: "waiting"; agent: AgentName; reason: string; seconds: number } & Timed)
   | ({ type: "fallback"; agent: AgentName; reason: string; from_model: string; to_model: string } & Timed)
-  | ({ type: "final"; backend: string } & AgentResult & Timed)
+  | ({ type: "final"; backend: string; framework?: string } & AgentResult & Timed)
   | ({ type: "error" } & ApiErrorBody & Timed);
 
 export interface AgentResult {
