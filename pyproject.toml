@@ -17,6 +17,11 @@ filterwarnings = [
     # the warning fires only because pydantic-settings is now installed (for
     # backend/core/config.py). Not our code.
     "ignore:Field 'lifespan' has an incomplete definition:UserWarning",
+    # Emitted inside google-adk itself (its AgentTool and function-declaration
+    # internals), not by our code.
+    "ignore:.*JSON_SCHEMA_FOR_FUNC_DECL.*:UserWarning",
+    "ignore:The `plugins` argument is deprecated:DeprecationWarning",
+    "ignore:SelectableGroups dict interface is deprecated:DeprecationWarning",
 ]
 
 [tool.ruff]

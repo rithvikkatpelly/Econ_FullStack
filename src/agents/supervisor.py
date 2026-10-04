@@ -113,6 +113,29 @@ def _parse_risk_signal(text: str) -> str | None:
     return None
 
 
+def framework() -> str:
+    """Which orchestrator answers questions: "adk" (Google's Agent
+    Development Kit, src/econ_adk — the default) or "native" (this package).
+    Claude runs on the native one only (ADK reaches Claude through Vertex AI,
+    which this project doesn't use), so AGENT_BACKEND=anthropic implies it."""
+    if os.environ.get("AGENT_BACKEND", "stub").strip().lower() == "anthropic":
+        return "native"
+    chosen = os.environ.get("AGENT_FRAMEWORK", "adk").strip().lower()
+    return chosen if chosen in ("adk", "native") else "adk"
+
+
+def run_with_framework(
+    query: str, trace: Trace | None = None, history: list[dict] | None = None
+) -> Trace:
+    """`run` on whichever orchestrator `framework()` selects. Same contract
+    either way: a completed Trace."""
+    if framework() == "adk":
+        from econ_adk import pipeline  # heavy import; only when used
+
+        return pipeline.run(query, trace, history)
+    return run(query, trace, history)
+
+
 def run(query: str, trace: Trace | None = None, history: list[dict] | None = None) -> Trace:
     """Convenience entry point. Returns the completed Trace (which carries the
     final report, the tool sequence, usage, and timing)."""

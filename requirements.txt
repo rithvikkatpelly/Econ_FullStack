@@ -11,6 +11,9 @@ pydantic>=2.6.0
 anthropic>=0.40.0
 # ... and AGENT_BACKEND=gemini (Gemini API or Vertex AI).
 google-genai>=1.50.0
+# The default orchestrator (src/econ_adk, AGENT_FRAMEWORK=adk). Pinned: ADK
+# moves fast and the pipeline uses its callback and AgentTool contracts.
+google-adk==2.11.0
 
 # HTTP interface (backend/app) — a second, independently deployable surface
 # over the same src/tools.py logic the MCP server uses. The MCP server itself

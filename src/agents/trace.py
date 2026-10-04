@@ -52,6 +52,13 @@ class Trace:
     final_report: str = ""
     # Populated by the risk agent so evals can check it without parsing prose.
     risk_signal: str | None = None
+    # True once the report has been streamed as report_delta events, so the
+    # ADK pipeline doesn't repeat it as one final delta.
+    streamed_report: bool = False
+    # The model failure that ended the run, when a backend reports one
+    # (ResilientGemini does — ADK would otherwise hide it inside a tool
+    # result). Excluded from equality/repr.
+    model_failure: Exception | None = field(default=None, repr=False, compare=False)
     # Progress listener (see module docstring). Excluded from equality/repr.
     listener: Callable[[dict], None] | None = field(default=None, repr=False, compare=False)
 
