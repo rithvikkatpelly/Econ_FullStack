@@ -31,6 +31,7 @@ def _events(response) -> list[dict]:
 def test_health_reports_the_agent_backend(client):
     body = client.get("/health").json()
     assert body["agent_backend"] == "stub"
+    assert body["agent_framework"] == "adk"  # the default orchestrator
     assert body["agent_model_configured"] is True
 
 
@@ -197,6 +198,7 @@ def test_stream_runs_on_the_gemini_backend(client, monkeypatch):
             pass
 
     monkeypatch.setenv("AGENT_BACKEND", "gemini")
+    monkeypatch.setenv("AGENT_FRAMEWORK", "native")  # fakes the native GeminiModel's client
     monkeypatch.setattr(google.genai, "Client", Client)
 
     events = _events(client.post("/agent/stream", json={"query": "Say hello."}))
@@ -226,6 +228,7 @@ def test_ask_endpoint_does_not_stream(client, monkeypatch):
     """No listener, no streaming: /agent/ask uses plain turns."""
     from agents.model import StubModel
 
+    monkeypatch.setenv("AGENT_FRAMEWORK", "native")
     def boom(*_a, **_k):
         raise AssertionError("stream_turn used without a listener")
 
@@ -250,3 +253,55 @@ def test_quota_exhaustion_is_reported_as_such(client, monkeypatch):
     events = _events(client.post("/agent/stream", json={"query": "Show core PCE since 2021."}))
     assert events[-1]["type"] == "error"
     assert events[-1]["error"] == "model_quota_exhausted"
+
+
+def test_the_framework_is_selectable_and_reported(client, monkeypatch):
+    for framework in ("adk", "native"):
+        monkeypatch.setenv("AGENT_FRAMEWORK", framework)
+        events = _events(client.post("/agent/stream", json={"query": QUERY}))
+        assert events[0]["framework"] == framework
+        assert events[-1]["framework"] == framework
+        assert set(events[-1]["series_used"]) == {"CPIAUCSL", "UNRATE"}
+
+
+def test_claude_always_runs_on_the_native_orchestrator(monkeypatch):
+    from agents.supervisor import framework
+
+    monkeypatch.setenv("AGENT_FRAMEWORK", "adk")
+    monkeypatch.setenv("AGENT_BACKEND", "anthropic")
+    assert framework() == "native"
+
+
+def test_stream_runs_on_adk_with_gemini(client, monkeypatch):
+    """End to end over HTTP on the ADK pipeline with AGENT_BACKEND=gemini:
+    ADK's own Gemini model class, scripted. The supervisor delegates once and
+    the Report Agent's answer streams back in chunks."""
+    from google.adk.models import Gemini, LlmResponse
+    from google.genai import types as gt
+
+    def content(*parts):
+        return gt.Content(role="model", parts=list(parts))
+
+    async def fake(self, llm_request, stream=False):
+        system = str(llm_request.config.system_instruction or "")
+        if system.startswith("You are the Report"):
+            assert stream  # ResilientGemini streams internally for the report
+            for chunk in ["Hello ", "from ADK."]:
+                yield LlmResponse(partial=True, content=content(gt.Part(text=chunk)))
+            yield LlmResponse(content=content(gt.Part(text="Hello from ADK.")))
+            return
+        yield LlmResponse(content=content(gt.Part(function_call=gt.FunctionCall(
+            id="d1", name="report_agent", args={"request": "Say hello."}))))
+
+    monkeypatch.setenv("AGENT_BACKEND", "gemini")
+    monkeypatch.setenv("AGENT_FRAMEWORK", "adk")
+    monkeypatch.setattr(Gemini, "generate_content_async", fake)
+
+    events = _events(client.post("/agent/stream", json={"query": "Say hello."}))
+    assert [e["type"] for e in events] == [
+        "start", "delegation", "report_delta", "report_delta", "agent_output", "final",
+    ]
+    assert events[0]["framework"] == "adk" and events[0]["backend"] == "gemini"
+    assert [e["text"] for e in events if e["type"] == "report_delta"] == ["Hello ", "from ADK."]
+    # skip_summarization: the report is the answer; no supervisor restatement.
+    assert events[-1]["final_report"] == "Hello from ADK."

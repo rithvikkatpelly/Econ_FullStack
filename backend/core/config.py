@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # Which model drives the supervisor + specialists: "stub" (deterministic,
     # free, the default), "gemini", or "anthropic". See src/agents/model.py.
     agent_backend: str = "stub"
+    # Which orchestrator: "adk" (Google Agent Development Kit, the default) or
+    # "native". See agents.supervisor.framework().
+    agent_framework: str = "adk"
     # Gemini: either an API key (Gemini API) ...
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
@@ -111,6 +114,7 @@ class Settings(BaseSettings):
             "FRED_OFFLINE": self.fred_offline,
             "SESSION_TOKEN_BUDGET": str(self.session_token_budget),
             "AGENT_BACKEND": self.agent_backend,
+            "AGENT_FRAMEWORK": self.agent_framework,
             "GEMINI_API_KEY": self.gemini_api_key,
             "GEMINI_MODEL": self.gemini_model,
             "GOOGLE_GENAI_USE_VERTEXAI": self.google_genai_use_vertexai,

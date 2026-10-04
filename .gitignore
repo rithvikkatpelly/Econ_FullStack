@@ -27,3 +27,4 @@ frontend/.env
 .DS_Store
 .vscode/
 evals/REPORT.live.md
+evals/REPORT.native.md

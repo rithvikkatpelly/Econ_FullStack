@@ -12,3 +12,5 @@ httpx>=0.27.0
 # Agent endpoints (/agent/*) with AGENT_BACKEND=gemini. Imported lazily, so
 # the stub backend never touches it.
 google-genai>=1.50.0
+# The default agent orchestrator (src/econ_adk): Google's Agent Development Kit.
+google-adk==2.11.0

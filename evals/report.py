@@ -31,6 +31,7 @@ def aggregate(suite: Suite) -> dict:
     mean_latency = statistics.mean(r.elapsed_ms for r in suite.results) if n else 0.0
     return {
         "backend": suite.backend,
+        "framework": suite.framework,
         "n_cases": n,
         "pass_rate": round(passed / n, 4) if n else 0.0,
         "passed": passed,
@@ -61,9 +62,13 @@ def to_markdown(suite: Suite) -> str:
         if m in agg["metrics"]
     )
     case_lines = "\n".join(_case_row(r) for r in suite.results)
+    run_line = (
+        f"orchestrator: `{agg['framework']}` · backend: `{agg['backend']}` · "
+        f"{agg['n_cases']} cases"
+    )
     return f"""# Evaluation report
 
-_Generated {ts} · backend: `{agg['backend']}` · {agg['n_cases']} cases_
+_Generated {ts} · {run_line}_
 
 **{agg['passed']}/{agg['n_cases']} cases pass all applicable checks
 ({agg['pass_rate'] * 100:.0f}%).**
@@ -103,7 +108,7 @@ def _backend_note(backend: str) -> str:
 
 def print_summary(suite: Suite) -> None:
     agg = aggregate(suite)
-    print(f"backend={agg['backend']}  cases={agg['n_cases']}  "
+    print(f"framework={agg['framework']}  backend={agg['backend']}  cases={agg['n_cases']}  "
           f"pass={agg['passed']}/{agg['n_cases']} ({agg['pass_rate'] * 100:.0f}%)")
     for m, v in agg["metrics"].items():
         print(f"  {m:<22} {v * 100:5.1f}%")

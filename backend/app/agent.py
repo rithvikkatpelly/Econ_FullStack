@@ -8,14 +8,16 @@ Risk / Report agents) on a plain-language question:
 - ``POST /agent/stream`` — same run, streamed as server-sent events so a UI
   can draw an activity timeline while the agents work.
 
-The model behind the agents is whatever ``AGENT_BACKEND`` selects — ``gemini``
-in the deployed app, ``stub`` (deterministic, keyless) by default and in
-tests. The endpoints don't know or care which.
+The orchestrator is whatever ``AGENT_FRAMEWORK`` selects — ``adk`` (Google's
+Agent Development Kit, ``src/econ_adk``; the default) or ``native``
+(``src/agents``) — and the model whatever ``AGENT_BACKEND`` selects:
+``gemini`` in the deployed app, ``stub`` (deterministic, keyless) by default
+and in tests. The endpoints don't know or care which.
 
 Stream format: one ``data: <json>\\n\\n`` frame per event, each with a
 ``type``:
 
-    start         {query, backend, follow_up}
+    start         {query, backend, framework, follow_up}
     delegation    {agent, task}                       supervisor hands off
     tool_call     {agent, tool, arguments, ok, error, latency_ms}
     report_delta  {agent, text}                       answer text as it's written
@@ -54,7 +56,7 @@ from pydantic import BaseModel, Field, field_validator
 import cost_tracker
 from agents import conversation
 from agents.model import QuotaExhausted
-from agents.supervisor import Supervisor
+from agents.supervisor import framework, run_with_framework
 from agents.trace import Trace
 from core.config import get_settings
 from rate_limit import RateLimiter
@@ -149,7 +151,7 @@ def _run(
     trace = Trace(listener=listener)
     history = [t.model_dump() for t in req.history]
     with cost_tracker.run_budget(settings.agent_run_token_budget) as budget:
-        Supervisor(trace).run(req.query, history)
+        run_with_framework(req.query, trace, history)
     return trace, {
         "data_tokens": budget.used_tokens,
         "data_token_budget": budget.limit_tokens,
@@ -190,7 +192,7 @@ def ask(req: AskRequest, request: Request) -> dict:
         raise HTTPException(status_code=status, detail=_failure(exc)) from None
     finally:
         _slots.release()
-    return {"backend": backend_name(), **trace.to_dict(), **usage}
+    return {"backend": backend_name(), "framework": framework(), **trace.to_dict(), **usage}
 
 
 def _frame(event: dict) -> str:
@@ -206,6 +208,7 @@ async def stream(req: AskRequest, request: Request) -> StreamingResponse:
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
     backend = backend_name()
+    orchestrator = framework()
 
     def push(event: dict | None) -> None:
         # Called from the worker thread. If the loop is gone (server
@@ -216,7 +219,8 @@ async def stream(req: AskRequest, request: Request) -> StreamingResponse:
     def work() -> None:
         try:
             trace, usage = _run(req, listener=push)
-            push({"type": "final", "backend": backend, **trace.summary(), **usage})
+            push({"type": "final", "backend": backend, "framework": orchestrator,
+                  **trace.summary(), **usage})
         except Exception as exc:  # noqa: BLE001 - becomes an `error` frame
             push({"type": "error", **_failure(exc)})
         finally:
@@ -232,6 +236,7 @@ async def stream(req: AskRequest, request: Request) -> StreamingResponse:
             "type": "start",
             "query": req.query,
             "backend": backend,
+            "framework": orchestrator,
             "follow_up": bool(req.history),
         })
         while (event := await queue.get()) is not None:

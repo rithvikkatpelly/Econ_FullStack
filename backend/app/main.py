@@ -179,6 +179,7 @@ def health() -> dict:
         "fred_api_key_configured": bool(os.environ.get("FRED_API_KEY")),
         "offline": fred_client._offline(),
         "agent_backend": agent.backend_name(),
+        "agent_framework": agent.framework(),
         "agent_model_configured": settings.agent_model_configured,
     }
 

@@ -28,7 +28,8 @@ Docs: http://127.0.0.1:8000/docs · see the root README's "Run the API" section
 for `curl` examples and deployment notes.
 
 Runs against the built-in synthetic fixture unless `FRED_API_KEY` is set in
-`../.env`. The agent endpoints use the deterministic `stub` planner unless
+`../.env`. The agent endpoints run on Google's ADK (`AGENT_FRAMEWORK=adk`, the default;
+`native` is the alternative) and use the deterministic `stub` planner unless
 `AGENT_BACKEND=gemini` (with `GEMINI_API_KEY`, or Vertex AI via
 `GOOGLE_GENAI_USE_VERTEXAI=true`) — see the root README's "Ask the agent".
 

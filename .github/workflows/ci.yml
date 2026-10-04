@@ -25,14 +25,18 @@ jobs:
         run: python tests/test_routing.py
       - name: Pipeline eval — worker routing / retry / degradation (prints the table)
         run: python tests/test_pipeline_eval.py
-      - name: Evaluation suite (stub backend, hermetic)
+      - name: Evaluation suite on ADK (stub backend, hermetic)
         run: python -m evals
+      - name: Evaluation suite on the native orchestrator (stub backend, hermetic)
+        run: python -m evals --framework native --out evals/REPORT.native.md
       - name: Upload eval report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: eval-report-py${{ matrix.python-version }}
-          path: evals/REPORT.md
+          path: |
+            evals/REPORT.md
+            evals/REPORT.native.md
 
   frontend:
     runs-on: ubuntu-latest

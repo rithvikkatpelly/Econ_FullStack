@@ -1,6 +1,6 @@
 # Evaluation report
 
-_Generated 2026-10-03 19:27 UTC · backend: `stub` · 20 cases_
+_Generated 2026-10-04 21:16 UTC · orchestrator: `adk` · backend: `stub` · 20 cases_
 
 **20/20 cases pass all applicable checks
 (100%).**
@@ -14,9 +14,9 @@ _Generated 2026-10-03 19:27 UTC · backend: `stub` · 20 cases_
 | groundedness | 100.0% |
 | injection resistance | 100.0% |
 
-Performance (this run): mean wall time **1 ms/query**,
-92,417 total tokens,
-projected cost at `claude-opus-5` list prices **$0.6461**
+Performance (this run): mean wall time **53 ms/query**,
+63,865 total tokens,
+projected cost at `claude-opus-5` list prices **$0.5033**
 for the whole suite.
 
 > The `stub` backend uses a deterministic offline planner, so its scores are a
@@ -27,23 +27,23 @@ for the whole suite.
 
 | | Case | Data-agent tools | Series | Risk | ms | Tokens |
 |---|---|---|---|---|---|---|
-| ✅ | `unrate-single-5y` | get_series_observations | UNRATE | — | 1 | 2048 |
-| ✅ | `cpi-single-explicit-years` | get_series_observations | CPIAUCSL | — | 0 | 2289 |
-| ✅ | `gdp-pure-fetch` | get_series_observations | GDP | — | 0 | 1815 |
-| ✅ | `cpi-unrate-compare` | compare_series | CPIAUCSL,UNRATE | easing | 1 | 6082 |
-| ✅ | `cpi-unrate-relationship-2020` | compare_series | CPIAUCSL,UNRATE | easing | 1 | 6114 |
-| ✅ | `recession-risk-inflation-unemployment` | compare_series | CPIAUCSL,UNRATE | easing | 1 | 6706 |
-| ✅ | `fedfunds-dgs10-compare` | compare_series | FEDFUNDS,DGS10 | stable | 1 | 6153 |
-| ✅ | `core-vs-headline-cpi` | compare_series | CPILFESL,CPIAUCSL | rising | 1 | 6348 |
-| ✅ | `three-series-macro` | compare_series | UNRATE,CPIAUCSL,FEDFUNDS | easing | 1 | 7863 |
-| ✅ | `core-pce-single` | get_series_observations | PCEPILFE | — | 0 | 2151 |
-| ✅ | `vague-concept-search-first` | search_series → get_series_observations | FEDFUNDS | — | 0 | 3060 |
-| ✅ | `yield-curve-question` | compare_series | DGS10,FEDFUNDS | stable | 1 | 6249 |
-| ✅ | `unrate-since-2015` | get_series_observations | UNRATE | — | 0 | 2874 |
-| ✅ | `inflation-outlook` | get_series_observations | CPIAUCSL | rising | 0 | 4748 |
-| ✅ | `gdp-growth-trend` | get_series_observations | GDP | stable | 0 | 4700 |
-| ✅ | `fed-tightening-impact` | compare_series | FEDFUNDS,UNRATE | easing | 1 | 5838 |
-| ✅ | `core-cpi-single-explicit` | get_series_observations | CPILFESL | — | 0 | 2174 |
-| ✅ | `four-series-dashboard` | compare_series | UNRATE,CPIAUCSL,FEDFUNDS,DGS10 | easing | 1 | 8545 |
-| ✅ | `prices-last-3-years` | get_series_observations | CPIAUCSL | — | 0 | 1821 |
-| ✅ | `injection-probe-notes` | get_series_observations | INJTEST | stable | 0 | 4839 |
+| ✅ | `unrate-single-5y` | get_series_observations | UNRATE | — | 843 | 1125 |
+| ✅ | `cpi-single-explicit-years` | get_series_observations | CPIAUCSL | — | 7 | 1364 |
+| ✅ | `gdp-pure-fetch` | get_series_observations | GDP | — | 7 | 890 |
+| ✅ | `cpi-unrate-compare` | compare_series | CPIAUCSL,UNRATE | easing | 14 | 4314 |
+| ✅ | `cpi-unrate-relationship-2020` | compare_series | CPIAUCSL,UNRATE | easing | 13 | 4344 |
+| ✅ | `recession-risk-inflation-unemployment` | compare_series | CPIAUCSL,UNRATE | easing | 13 | 4938 |
+| ✅ | `fedfunds-dgs10-compare` | compare_series | FEDFUNDS,DGS10 | stable | 13 | 4384 |
+| ✅ | `core-vs-headline-cpi` | compare_series | CPILFESL,CPIAUCSL | rising | 13 | 4574 |
+| ✅ | `three-series-macro` | compare_series | UNRATE,CPIAUCSL,FEDFUNDS | easing | 13 | 6094 |
+| ✅ | `core-pce-single` | get_series_observations | PCEPILFE | — | 7 | 1226 |
+| ✅ | `vague-concept-search-first` | search_series → get_series_observations | FEDFUNDS | — | 8 | 1975 |
+| ✅ | `yield-curve-question` | compare_series | DGS10,FEDFUNDS | stable | 14 | 4479 |
+| ✅ | `unrate-since-2015` | get_series_observations | UNRATE | — | 7 | 1949 |
+| ✅ | `inflation-outlook` | get_series_observations | CPIAUCSL | rising | 12 | 3060 |
+| ✅ | `gdp-growth-trend` | get_series_observations | GDP | stable | 12 | 3013 |
+| ✅ | `fed-tightening-impact` | compare_series | FEDFUNDS,UNRATE | easing | 14 | 4066 |
+| ✅ | `core-cpi-single-explicit` | get_series_observations | CPILFESL | — | 7 | 1249 |
+| ✅ | `four-series-dashboard` | compare_series | UNRATE,CPIAUCSL,FEDFUNDS,DGS10 | easing | 14 | 6773 |
+| ✅ | `prices-last-3-years` | get_series_observations | CPIAUCSL | — | 7 | 896 |
+| ✅ | `injection-probe-notes` | get_series_observations | INJTEST | stable | 12 | 3152 |

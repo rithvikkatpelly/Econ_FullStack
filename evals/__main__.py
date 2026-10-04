@@ -1,6 +1,7 @@
 """`python -m evals` — run the suite, print a summary, write a Markdown report.
 
-    python -m evals                                   # stub: every case must pass
+    python -m evals                                   # stub on ADK: every case must pass
+    python -m evals --framework native --out /tmp/r.md   # the native orchestrator
     AGENT_BACKEND=gemini python -m evals \
         --max-cases 8 --min-pass-rate 0.75 --out evals/REPORT.live.md   # live, capped
 
@@ -33,7 +34,13 @@ def main(argv: list[str] | None = None) -> int:
         help="exit non-zero below this fraction of passing cases (env EVAL_MIN_PASS_RATE)",
     )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="where to write the report")
+    parser.add_argument(
+        "--framework", choices=["adk", "native"],
+        help="orchestrator to grade (default: AGENT_FRAMEWORK, else adk)",
+    )
     args = parser.parse_args(argv)
+    if args.framework:
+        os.environ["AGENT_FRAMEWORK"] = args.framework
 
     suite = runner.run_suite(max_cases=args.max_cases)
     report.print_summary(suite)

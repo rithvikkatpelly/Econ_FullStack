@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cost_tracker
 from agents import Trace
-from agents.supervisor import Supervisor
+from agents.supervisor import Supervisor, framework
 from evals import metrics
 
 DATASET = Path(__file__).resolve().parent / "dataset.jsonl"
@@ -52,6 +52,7 @@ class CaseResult:
 @dataclass
 class Suite:
     backend: str
+    framework: str = "native"
     results: list[CaseResult] = field(default_factory=list)
 
 
@@ -79,7 +80,12 @@ def run_case(case: dict) -> CaseResult:
     cost_tracker.reset_budget()  # each case gets its own session budget
     trace = Trace()
     try:
-        Supervisor(trace).run(case["query"])
+        if framework() == "adk":
+            from econ_adk import pipeline
+
+            pipeline.run(case["query"], trace)
+        else:
+            Supervisor(trace).run(case["query"])
     except Exception as exc:  # noqa: BLE001 - recorded on the case, suite continues
         return _errored(case, trace, exc)
     scores = metrics.score_case(case, trace)
@@ -128,7 +134,7 @@ def run_suite(max_cases: int | None = None) -> Suite:
     # The harness is hermetic: force offline FRED unless the caller really
     # wants live data (and has said so alongside a live backend).
     os.environ.setdefault("FRED_OFFLINE", "1")
-    suite = Suite(backend=backend)
+    suite = Suite(backend=backend, framework=framework())
     for case in select_cases(load_cases(), max_cases):
         suite.results.append(run_case(case))
     return suite
