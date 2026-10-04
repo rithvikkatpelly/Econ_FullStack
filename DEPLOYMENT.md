@@ -435,6 +435,7 @@ Docker build context (`.dockerignore`).
 | `FRED_API_KEY` | for live data | Via Secret Manager (`--set-secrets`), not a plain env var. Without it the API serves the synthetic fixture — fine for a demo, misleading for a real deployment. |
 | `FRED_OFFLINE` | set to `0` in prod | Makes a missing key fail loudly (fixture won't silently serve fake data) rather than degrading quietly. The workflow sets this. |
 | `CORS_ALLOWED_ORIGINS` | **yes** | Must list the deployed frontend's exact origin. The workflow sets this automatically after the frontend deploys (step 8.4); comma-separated, no trailing slash, if you ever add a second allowed origin by hand. |
+| `AGENT_FRAMEWORK` | optional | `adk` (default, Google Agent Development Kit) or `native`. |
 | `AGENT_BACKEND` | set by the workflow | `gemini` in production. `stub` (the default) runs the deterministic offline planner — no model calls. |
 | `GEMINI_MODEL` | optional | Defaults to `gemini-3.8-flash`. |
 | `GEMINI_FALLBACK_MODELS` | optional | Defaults to `gemini-3.6-flash,gemini-3.5-flash` — used when the current model is overloaded or out of quota. |

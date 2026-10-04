@@ -46,15 +46,17 @@ FastAPI (Cloud Run) ─ backend/app/agent.py
    │  rate limit → run slot → run_budget → Supervisor in a worker thread
    │  Trace(listener=push) ──────────┘   (events only — never tool results)
    ▼
-agents/ (supervisor + 4 specialists) ── GeminiModel ──▶ Vertex AI (Gemini)
-   │                                    (service-account auth, no key)
+econ_adk/ (Google ADK: LlmAgents + AgentTools)  ── ResilientGemini ──▶ Gemini
+   │   or agents/ (native loop, AGENT_FRAMEWORK=native) ── GeminiModel
+   │                         (Gemini API key, or Vertex AI as the service account)
    ▼
 tools.py ──▶ fred_client.py ──▶ FRED
 ```
 
-`AGENT_BACKEND` picks the model (`gemini` deployed, `stub` in tests and CI,
-`anthropic` also supported); nothing above or below `agents/model.py`
-changes with it.
+`AGENT_FRAMEWORK` picks the orchestrator (`adk`, the default, or `native`)
+and `AGENT_BACKEND` the model (`gemini` live, `stub` in tests and CI,
+`anthropic` on the native orchestrator). Both orchestrators call the same
+`tools.py` and write the same `Trace`, so nothing above or below them changes.
 
 ## The multi-agent layer
 

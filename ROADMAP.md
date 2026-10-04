@@ -81,11 +81,24 @@ reads as a development story rather than one drop.
       2019-2024 in 2026); supervisor stops once the report exists (it was
       retyping it, or re-delegating)
 
+- [x] **Google Agent Development Kit** — `src/econ_adk`: the supervisor +
+      specialists as ADK `LlmAgent`s / `AgentTool`s / `FunctionTool`s, now
+      the default orchestrator (`AGENT_FRAMEWORK=adk`). Proven equivalent to
+      the native one on all 20 eval cases; CI grades both. `StubLlm` keeps it
+      keyless offline; `ResilientGemini` (ADK's Gemini + quota waits,
+      fallback, report streaming, failure surfacing) runs it live — verified
+      end to end on live Gemini through the web UI. `adk web` works.
+- [x] **Mid-loop model fallback** — Gemini 3 rejects foreign thought
+      signatures (verified live); a failover now re-signs only the turns the
+      new model didn't produce with `skip_thought_signature_validator`
+
 ### Next
 
-- [ ] Mid-loop model fallback: today a quota/overload hit after an agent's
-      first tool turn fails the run (thought signatures don't transfer);
-      restarting just that agent on the fallback model would recover it
+- [ ] Free public demo without billing: frontend on Firebase Hosting, API on
+      a free container host, Gemini API free tier with automatic fallback to
+      the offline stub when the day's quota is gone
+- [ ] Publish a small live Gemini eval (fits the free tier: ~8 cases)
+
 - [ ] Inherit the earlier *period* in follow-ups on the stub, not just the
       series ("and core CPI?" should keep the last date range)
 - [ ] Turn the live eval's first results into dataset cases where Gemini and

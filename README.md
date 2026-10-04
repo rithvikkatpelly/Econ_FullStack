@@ -13,10 +13,13 @@ The same four tools are exposed two ways: as an **MCP server** you can point
 Claude Desktop at, and as the tool surface for an **in-process multi-agent
 orchestrator**. Both call one implementation, so the two can't drift.
 
-It is also a **Google full-stack app**: a React front end and a FastAPI back
-end on Cloud Run, with the multi-agent pipeline running on **Gemini** (via
-Vertex AI, no stored model key) and streaming its progress to the browser as
-a live activity timeline — see [Ask the agent](#ask-the-agent-gemini-full-stack).
+It is also a **Google agent-stack app**: the multi-agent pipeline is built on
+Google's **Agent Development Kit (ADK)** and runs on **Gemini**, behind a
+FastAPI back end that streams its progress to a React front end as a live
+activity timeline — see [Two orchestrators](#two-orchestrators-adk-and-native)
+and [Ask the agent](#ask-the-agent-gemini-full-stack). It has run end to end
+on live Gemini through the Gemini API; the Cloud Run + Vertex AI deployment
+is scripted and **deploy-ready, not deployed** (see [DEPLOYMENT.md](DEPLOYMENT.md)).
 
 It runs end to end with **no API key** — a deterministic planner stands in for
 the model and a synthetic fixture stands in for FRED — which is what lets the
@@ -53,11 +56,12 @@ evaluation suite be hermetic and reproducible.
 | Concern | How it shows up here |
 |---|---|
 | **Tool-contract design** | Five narrow tools across two data sources (FRED + news), strict typed inputs, structured (never raised) errors, idempotent caching — [§1](#1-tool-contracts) |
+| **Google Agent Development Kit** | Supervisor + specialists as ADK `LlmAgent`s wired with `AgentTool`, FRED tools as `FunctionTool`s, ADK's `Gemini` model hardened for real quota/overload behaviour, `root_agent` for `adk web` — and proven equivalent to the native orchestrator on every eval case — [Two orchestrators](#two-orchestrators-adk-and-native) |
 | **Multi-agent systems** | Supervisor + four specialists (one pipeline), and a second orchestrator → Data/News Agent(s) → Analysis Agent pipeline that fans out to *heterogeneous* sources concurrently and reasons across them — [§3](#3-multi-agent-orchestration) |
 | **AI safety** | Input validation, prompt-injection containment (FRED metadata *and* adversarial news headlines), secret redaction, least-privilege tools, rate limiting, audit log — [§5](#5-security), [Cross-source security](#cross-source-security), [SECURITY.md](SECURITY.md) |
 | **Context / cost engineering** | Cache-friendly prompt layout, result shaping, a pre-return token budget with a shrink fallback, per-role effort — [§4](#4-context-and-cost) |
 | **Evaluation** | 20-case dataset with expected tool-call sequences, six scored metrics, generated report, CI gate — [§6](#6-evaluation) |
-| **Full-stack delivery** | React + FastAPI on Cloud Run, Gemini through Vertex AI, agent progress streamed over SSE into a live activity timeline, CI/CD with keyless Workload Identity Federation — [Ask the agent](#ask-the-agent-gemini-full-stack), [DEPLOYMENT.md](DEPLOYMENT.md) |
+| **Full-stack delivery** | React + FastAPI, agent progress streamed over SSE into a live activity timeline; Dockerfiles and a Cloud Run + Vertex AI pipeline with keyless Workload Identity Federation (deploy-ready) — [Ask the agent](#ask-the-agent-gemini-full-stack), [DEPLOYMENT.md](DEPLOYMENT.md) |
 | **Production hygiene** | Hermetic tests, deterministic offline mode, `pyproject` + ruff, CI on every push |
 
 Architecture diagram and the guardrail-by-layer table:
@@ -82,6 +86,9 @@ python examples/measure.py
 
 # 4. Tests + lint:
 pytest -q && ruff check .
+
+# 5. Open the agents in Google ADK's developer UI (offline stub by default):
+cd src && adk web          # then pick "econ_adk"
 ```
 
 Nothing above needs credentials. The orchestrator defaults to
@@ -333,6 +340,56 @@ Same loop code every way; select with `AGENT_BACKEND=stub|gemini|anthropic`.
 > specialists, in what order. It is not a stand-in for the model's *analysis*.
 > The offline risk signal, for instance, is an honest linear read of the
 > first-to-latest move in the fetched series, clearly labelled as such.
+
+#### Two orchestrators: ADK and native
+
+The same supervisor and specialists exist twice, and `AGENT_FRAMEWORK`
+picks one. The default is **`adk`**: Google's Agent Development Kit
+([`src/econ_adk/pipeline.py`](src/econ_adk/pipeline.py)). **`native`** is
+the ~40-line loop described above. Prompts, tools, guardrails and the trace
+are shared, so the only difference is who runs the loop.
+
+```
+supervisor (LlmAgent)
+  ├─ AgentTool(economic_data_agent)  ── FunctionTools → tools.call_tool → FRED
+  ├─ AgentTool(research_agent)        ── FunctionTool  → get_series_metadata
+  ├─ AgentTool(risk_agent)
+  └─ AgentTool(report_agent, skip_summarization=True)   ← its answer ends the run
+```
+
+- **Tools stay ours.** Each ADK `FunctionTool` is a typed wrapper over
+  `tools.call_tool`. ADK calls get the same validation, cost guardrail,
+  structured errors and audit log as the MCP server.
+- **ADK callbacks write the same `Trace`.** `before/after_tool_callback`
+  and `after_model_callback` record delegations, tool calls, outputs and
+  tokens exactly as the native supervisor does. So the evals, the SSE
+  stream and the UI work on either orchestrator.
+- **Proven equivalent.** `tests/test_adk.py` runs **all 20 eval cases**
+  through both orchestrators. It asserts identical delegations, tool calls
+  (agent, name, arguments, order), grounding, risk signal and report. CI
+  then grades both with `python -m evals --framework adk|native`.
+- **Offline under ADK too.** `StubLlm` adapts the deterministic planner to
+  ADK's `BaseLlm`, so CI runs the real ADK pipeline with no key.
+- **Live, it's ADK's own `Gemini` class**, subclassed as `ResilientGemini`
+  to add what the first live runs needed:
+  - waiting out per-minute quotas as Google asks;
+  - failing over between models on overload or quota, with a circuit
+    breaker;
+  - streaming the report even though `AgentTool` runs nested agents unary;
+  - surfacing a nested agent's quota failure as itself instead of as tool
+    text.
+- **Mid-loop fallback.** Gemini 3 rejects another model's thought signature
+  (*"Corrupted thought signature"*) and an unsigned call (*"missing a
+  thought_signature"*), both verified live. A failover re-signs only the
+  turns the new model didn't produce, using Google's documented
+  `skip_thought_signature_validator` value.
+- **`adk web` works.** [`src/econ_adk/agent.py`](src/econ_adk/agent.py)
+  exposes `root_agent`, so `cd src && adk web` opens ADK's developer UI on
+  this exact agent tree.
+
+Claude runs on the native orchestrator only (`AGENT_BACKEND=anthropic`
+selects it automatically); ADK reaches Claude through Vertex AI, which this
+project doesn't use.
 
 ### 4. Context and cost
 
@@ -801,6 +858,14 @@ Design choices worth calling out:
 
 ![Ask the agent — the answer streaming in, token by token](docs/images/ui-agent-streaming.png)
 
+A live run on the full stack: React → FastAPI → **ADK → Gemini**. The run
+fell back from an out-of-quota model, waited out two free-tier rate limits,
+and recovered after the model first asked for a series the sample data
+doesn't have (`GS10`). FRED was on the **built-in sample data**
+(`FRED_OFFLINE=1`), so the numbers are illustrative, not real.
+
+![A live ADK + Gemini run: the activity timeline and grounded answer](docs/images/ui-adk-gemini-live.png)
+
 ![Ask the agent — completed run with the activity timeline expanded](docs/images/ui-agent.png)
 
 ### Web UI
@@ -916,6 +981,8 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 | `FRED_OFFLINE` | auto | `1`/`0` to force the synthetic fixture on/off |
 | `NEWS_API_KEY` | — | NewsAPI.org key; its presence also flips `NEWS_OFFLINE` auto → live |
 | `NEWS_OFFLINE` | auto | `1`/`0` to force the synthetic headline bank on/off |
+| `AGENT_FRAMEWORK` | `adk` | orchestrator: `adk` (Google ADK) or `native`; `anthropic` always uses `native` |
+| `ADK_MAX_LLM_CALLS` | `40` | whole-run ceiling on model calls in the ADK pipeline |
 | `AGENT_BACKEND` | `stub` | `gemini` or `anthropic` for the real model loop |
 | `GEMINI_API_KEY` | — | Gemini API key, when `AGENT_BACKEND=gemini` without Vertex AI |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | model for the Gemini backend |
@@ -956,6 +1023,9 @@ frontend/           React + Vite + TS web app over backend/app: hero carousel, t
   src/api/agent.ts  SSE client for /agent/stream (fetch + stream reader) and the event types
   src/components/   one panel per tool + AskAgent (chat + activity timeline) + shared pieces
 src/
+  econ_adk/         the supervisor + specialists on Google's Agent Development Kit (the default orchestrator)
+    pipeline.py     LlmAgents + AgentTools + FunctionTools, StubLlm, ResilientGemini, ADK callbacks → Trace
+    agent.py        root_agent, for `adk web` / `adk run`
   server.py         MCP server (FastMCP): 5 tools + 1 resource, rate limit + audit at the boundary
   tools.py          the one implementation of the 5 tools + their Anthropic JSON schemas
   catalog.py        every series the project knows: FRED metadata, aliases, search terms, fixture shape
@@ -993,7 +1063,7 @@ examples/
   bench_parallel.py  sequential vs. parallel Data Agent latency, real numbers
   measure.py         regenerates docs/measurements.md from the offline fixture
 tests/  catalog, fred + news clients, security (incl. news injection), rate limit, audit,
-        both agent pipelines, Gemini backend, routing eval, HTTP + agent API, evals — 201 tests, hermetic, ~2s
+        both agent pipelines, Gemini backend, routing eval, HTTP + agent API, evals — 242 tests, hermetic, ~2s
 docs/
   architecture.md   diagrams + the guardrail-by-layer table
   measurements.md   generated context/cost numbers
@@ -1004,7 +1074,7 @@ docs/
 ## Testing
 
 ```bash
-pytest -q          # 201 tests, no network, deterministic, ~2s
+pytest -q          # 242 tests, no network, deterministic, ~2s
 ruff check .       # lint (config in pyproject.toml)
 python -m evals    # the eval suite is also a test (test_evals.py runs it)
 ```
