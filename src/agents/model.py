@@ -88,6 +88,42 @@ def _is_overloaded(model: str) -> bool:
         return _overloaded_until.get(model, 0.0) > time.monotonic()
 
 
+# Gemini 3 rejects a thought signature another model produced ("Corrupted
+# thought signature") and a function call with none ("missing a
+# thought_signature") — both verified live. This documented value tells it to
+# skip validation for turns it didn't produce, which is what lets a run fail
+# over to another model mid-loop.
+SKIP_THOUGHT_SIGNATURE = b"skip_thought_signature_validator"
+
+
+def own_signatures(content) -> set[bytes]:
+    """Every thought signature in a model turn (to recognise it later as ours)."""
+    return {p.thought_signature for p in (content.parts or []) if p.thought_signature}
+
+
+def resign_foreign_turns(contents: list, own: set[bytes]) -> list:
+    """Copy of `contents` where each model turn this model didn't produce
+    (it carries a signature not in `own`) has its signatures replaced by
+    SKIP_THOUGHT_SIGNATURE, and its function calls signed with it. Turns this
+    model produced are left exactly as they were — including parallel calls,
+    of which only the first is signed."""
+    out = []
+    for content in contents:
+        parts = content.parts or []
+        foreign = content.role == "model" and any(
+            p.thought_signature and p.thought_signature not in own for p in parts
+        )
+        if not foreign:
+            out.append(content)
+            continue
+        out.append(content.model_copy(update={"parts": [
+            p.model_copy(update={"thought_signature": SKIP_THOUGHT_SIGNATURE})
+            if (p.function_call is not None or p.thought_signature) else p
+            for p in parts
+        ]}))
+    return out
+
+
 class QuotaExhausted(RuntimeError):
     """The model provider's quota is used up and waiting won't (quickly) fix
     it. Safe to show: carries no request details. `retry_after` is Google's
@@ -242,6 +278,9 @@ class GeminiModel(Model):
         # each raw model turn here keyed by its first tool-call id and replay
         # it exactly when that turn reappears in `messages`.
         self._raw_turns: dict[str, Any] = {}
+        # Signatures the *current* model produced; anything else in the
+        # history is re-signed before sending (see resign_foreign_turns).
+        self._own_sigs: set[bytes] = set()
         self._call_seq = 0
 
     # --- request translation ---------------------------------------------
@@ -352,8 +391,8 @@ class GeminiModel(Model):
         """Run `call`; if the current model is unusable — overloaded (503
         after the SDK's retries) or out of quota (quotas are per model) —
         trip its circuit breaker and retry on the next model in the chain.
-        Never mid-loop: once this agent has replayable turns from one model,
-        its thought signatures don't transfer to another."""
+        Works mid-loop too: the next attempt re-signs the earlier model's
+        turns (`_signed`), which the new model then accepts."""
         from google.genai import errors
 
         while True:
@@ -363,7 +402,7 @@ class GeminiModel(Model):
                 if isinstance(exc, errors.ServerError) and exc.code != 503:
                     raise
                 nxt = self._chain.index(self._model) + 1 if self._model in self._chain else None
-                if self._raw_turns or not can_retry() or nxt is None or nxt >= len(self._chain):
+                if not can_retry() or nxt is None or nxt >= len(self._chain):
                     raise
                 quota = isinstance(exc, QuotaExhausted)
                 _mark_overloaded(self._model, exc.retry_after if quota else None)
@@ -372,6 +411,11 @@ class GeminiModel(Model):
                                  "reason": "quota_exhausted" if quota else "overloaded",
                                  "from_model": self._model, "to_model": self._chain[nxt]})
                 self._model = self._chain[nxt]
+                self._own_sigs = set()  # everything so far is now foreign
+
+    def _signed(self, contents: list) -> list:
+        """The history as the model about to be called will accept it."""
+        return resign_foreign_turns(contents, self._own_sigs)
 
     # --- the turn ------------------------------------------------------
     def turn(self, system: str, messages: list[dict], tools: list[dict]) -> ModelResponse:
@@ -379,7 +423,7 @@ class GeminiModel(Model):
         resp = self._with_fallback(
             lambda: self._with_quota_retry(
                 lambda: self._client.models.generate_content(
-                    model=self._model, contents=contents, config=config
+                    model=self._model, contents=self._signed(contents), config=config
                 ),
                 can_retry=lambda: True,
             ),
@@ -409,7 +453,7 @@ class GeminiModel(Model):
             nonlocal emitted
             parts.clear()
             for chunk in self._client.models.generate_content_stream(
-                model=self._model, contents=contents, config=config
+                model=self._model, contents=self._signed(contents), config=config
             ):
                 state["usage"] = getattr(chunk, "usage_metadata", None) or state["usage"]
                 state["feedback"] = getattr(chunk, "prompt_feedback", None) or state["feedback"]
@@ -461,6 +505,8 @@ class GeminiModel(Model):
             )
 
         cand = candidates[0]
+        if cand.content is not None:
+            self._own_sigs |= own_signatures(cand.content)
         finish = getattr(getattr(cand, "finish_reason", None), "name", None) or "STOP"
         if finish in _GEMINI_REFUSALS:
             return ModelResponse(

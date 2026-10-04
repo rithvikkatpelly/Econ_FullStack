@@ -555,28 +555,52 @@ def test_everything_overloaded_raises_the_503(chain):
         _model_on(models).turn("s", [{"role": "user", "content": "q"}], [])
 
 
-def test_no_fallback_mid_loop(chain):
-    """After a function-call turn on the primary, the replayed history carries
-    the primary's thought signatures — another model can't continue it, so a
-    503 on the *second* turn is raised, not failed over."""
+def test_mid_loop_fallback_resigns_the_earlier_models_turn(chain):
+    """A 503 on an agent's *second* turn now fails over too. The fallback
+    model would reject the primary's signature ("Corrupted thought
+    signature", verified live), so the replayed turn goes out re-signed with
+    Google's skip-validator value."""
+    from agents.model import SKIP_THOUGHT_SIGNATURE
 
-    class FirstTurnOnly(FakeModels):
+    class PrimaryDiesAfterOneTurn(FakeModels):
         def generate_content(self, *, model, contents, config):
-            if self.calls:
+            if model == "primary" and self.calls:
                 raise _503()
             return super().generate_content(model=model, contents=contents, config=config)
 
-    models = FirstTurnOnly([
-        _response([_call("get_series_metadata", {"series_id": "UNRATE"}, id="c1")]),
+    models = PrimaryDiesAfterOneTurn([
+        _response([_call("get_series_metadata", {"series_id": "UNRATE"}, id="c1",
+                         signature=b"primary-sig")]),
+        _response([types.Part(text="UNRATE framed.")]),
     ])
     agent = Agent(
         "research_agent", "sys",
         [t for t in tools.TOOL_SCHEMAS if t["name"] == "get_series_metadata"],
         tools.call_tool, _model_on(models, role="research_agent"), Trace(),
     )
-    with pytest.raises(errors.ServerError):
-        agent.run("Frame UNRATE.")
-    assert [c["model"] for c in models.calls] == ["primary"]
+    assert agent.run("Frame UNRATE.") == "UNRATE framed."
+    assert [c["model"] for c in models.calls] == ["primary", "fallback-1"]
+    replayed = models.calls[1]["contents"][1].parts[0]
+    assert replayed.function_call.name == "get_series_metadata"
+    assert replayed.thought_signature == SKIP_THOUGHT_SIGNATURE
+
+
+def test_resigning_leaves_this_models_own_turns_alone():
+    from agents.model import SKIP_THOUGHT_SIGNATURE, resign_foreign_turns
+
+    own = types.Content(role="model", parts=[
+        _call("a", {}, id="1", signature=b"mine"),
+        _call("b", {}, id="2"),  # parallel call: only the first is signed
+    ])
+    foreign = types.Content(role="model", parts=[
+        types.Part(text="hmm", thought_signature=b"theirs"),
+        _call("c", {}, id="3"),
+    ])
+    user = types.Content(role="user", parts=[types.Part(text="q")])
+    out = resign_foreign_turns([user, own, foreign], own={b"mine"})
+    assert out[0] is user and out[1] is own  # untouched, not even copied
+    assert [p.thought_signature for p in out[2].parts] == [SKIP_THOUGHT_SIGNATURE] * 2
+    assert foreign.parts[0].thought_signature == b"theirs"  # input not mutated
 
 
 def test_no_fallback_after_streamed_text_was_shown(chain):
