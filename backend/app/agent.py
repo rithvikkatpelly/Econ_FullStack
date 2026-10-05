@@ -22,9 +22,13 @@ Stream format: one ``data: <json>\\n\\n`` frame per event, each with a
     tool_call     {agent, tool, arguments, ok, error, latency_ms}
     report_delta  {agent, text}                       answer text as it's written
     waiting       {agent, reason, seconds}            paused for a provider quota
-    fallback      {agent, from_model, to_model}       primary model overloaded
+    fallback      {agent, reason, from_model, to_model, restart?}
+                                                      a model was overloaded or out of
+                                                      quota; `restart` = the answer so
+                                                      far is void, the run starts over
     agent_output  {agent, output}                     a specialist finished
-    final         {final_report, series_used, risk_signal, tokens, ...}
+    final         {final_report, series_used, risk_signal, tokens,
+                   backend, degraded}                 `backend` is the one that answered
     error         {error, detail}                     the run failed
 
 ``final`` or ``error`` is always the last frame. Tool *results* are never
@@ -34,7 +38,11 @@ worked — so raw FRED/news text can't reach the browser this way.
 Guardrails, because a live run costs real model calls: a per-client token
 bucket (``AGENT_RATE_LIMIT_*``), a cap on concurrent runs, and a query length
 limit. All three reject with the same structured error shape as the tool
-endpoints. Each run also spends tool data from its own token budget
+endpoints. And a free-tier demo stays up when the day's Gemini quota is gone:
+with ``AGENT_STUB_FALLBACK`` (the default) the question is answered on the
+offline stub instead, labelled as such (``final.degraded``).
+
+Each run also spends tool data from its own token budget
 (``AGENT_RUN_TOKEN_BUDGET``), never the process-wide one the tool endpoints
 share, so concurrent questions can't starve each other.
 """
@@ -47,7 +55,10 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -55,7 +66,7 @@ from pydantic import BaseModel, Field, field_validator
 
 import cost_tracker
 from agents import conversation
-from agents.model import QuotaExhausted
+from agents.model import QuotaExhausted, backend_override
 from agents.supervisor import framework, run_with_framework
 from agents.trace import Trace
 from core.config import get_settings
@@ -143,19 +154,104 @@ def _admit(request: Request) -> None:
         )
 
 
-def _run(
-    req: AskRequest, listener: Callable[[dict], None] | None = None
-) -> tuple[Trace, dict]:
-    """Run one question under its own token budget. Returns the trace and a
-    small usage dict for the response."""
-    trace = Trace(listener=listener)
+def _run_once(req: AskRequest, trace: Trace) -> dict:
+    """Run one question under its own token budget; return its data usage."""
     history = [t.model_dump() for t in req.history]
     with cost_tracker.run_budget(settings.agent_run_token_budget) as budget:
         run_with_framework(req.query, trace, history)
-    return trace, {
-        "data_tokens": budget.used_tokens,
-        "data_token_budget": budget.limit_tokens,
+    return {"data_tokens": budget.used_tokens, "data_token_budget": budget.limit_tokens}
+
+
+def _run(
+    req: AskRequest, listener: Callable[[dict], None] | None = None
+) -> tuple[Trace, dict]:
+    """Answer one question. Returns the trace and a small dict for the
+    response: data usage, the backend that actually answered, and why it
+    differs from the configured one (`degraded`), if it does.
+
+    On Gemini with AGENT_STUB_FALLBACK, a used-up quota doesn't fail the
+    question: it's answered again on the offline stub, and live calls pause
+    until the quota resets (`live_paused`) so later questions go straight to
+    the stub instead of each spending a minute finding out."""
+    configured = backend_name()
+    fallback = configured == "gemini" and settings.agent_stub_fallback
+    if fallback and live_paused():
+        trace = Trace(listener=listener)
+        trace.emit(_stub_fallback_event(restart=False))
+        with backend_override("stub"):
+            usage = _run_once(req, trace)
+        return trace, {**usage, "backend": "stub", "degraded": "model_quota_exhausted"}
+
+    trace = Trace(listener=listener)
+    try:
+        usage = _run_once(req, trace)
+    except QuotaExhausted as exc:
+        if not fallback:
+            raise
+        _pause_live(exc.retry_after)
+        logger.warning(
+            "gemini quota exhausted; answering on the stub",
+            extra={"fields": {"paused_until": _live_paused_until}},
+        )
+        # Whatever Gemini already streamed is abandoned: tell the UI to clear
+        # it, then answer from scratch on a fresh trace (same listener, same
+        # clock).
+        trace.emit(_stub_fallback_event(restart=True))
+        retry = Trace(listener=listener)
+        retry.started_at = trace.started_at
+        with backend_override("stub"):
+            usage = _run_once(req, retry)
+        return retry, {**usage, "backend": "stub", "degraded": "model_quota_exhausted"}
+    return trace, {**usage, "backend": configured, "degraded": None}
+
+
+def _stub_fallback_event(restart: bool) -> dict:
+    return {
+        "type": "fallback", "agent": "supervisor", "reason": "quota_exhausted",
+        "from_model": "Gemini", "to_model": "offline stub", "restart": restart,
     }
+
+
+# --- pausing live runs once the quota is gone -------------------------------
+# Gemini API free-tier quotas are per day and reset at midnight Pacific time.
+_RESET_TZ = ZoneInfo("America/Los_Angeles")
+_live_paused_until = 0.0  # epoch seconds
+_pause_lock = threading.Lock()
+
+
+def _next_quota_reset(now: float) -> float:
+    local = datetime.fromtimestamp(now, _RESET_TZ)
+    midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.timestamp()
+
+
+def _pause_live(retry_after: float | None, now: float | None = None) -> None:
+    """Stop calling Gemini for Google's `retry_after` estimate when it gave
+    one, else until the daily reset."""
+    global _live_paused_until
+    now = time.time() if now is None else now
+    until = now + retry_after if retry_after else _next_quota_reset(now)
+    with _pause_lock:
+        _live_paused_until = max(_live_paused_until, until)
+
+
+def live_paused() -> bool:
+    with _pause_lock:
+        return _live_paused_until > time.time()
+
+
+def reset_live_pause() -> None:
+    global _live_paused_until
+    with _pause_lock:
+        _live_paused_until = 0.0
+
+
+def effective_backend() -> str:
+    """The backend the next question will run on."""
+    configured = backend_name()
+    if configured == "gemini" and settings.agent_stub_fallback and live_paused():
+        return "stub"
+    return configured
 
 
 def _failure(exc: Exception) -> dict:
@@ -192,7 +288,7 @@ def ask(req: AskRequest, request: Request) -> dict:
         raise HTTPException(status_code=status, detail=_failure(exc)) from None
     finally:
         _slots.release()
-    return {"backend": backend_name(), "framework": framework(), **trace.to_dict(), **usage}
+    return {"framework": framework(), **trace.to_dict(), **usage}
 
 
 def _frame(event: dict) -> str:
@@ -207,7 +303,7 @@ async def stream(req: AskRequest, request: Request) -> StreamingResponse:
     _admit(request)
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict | None] = asyncio.Queue()
-    backend = backend_name()
+    backend = effective_backend()
     orchestrator = framework()
 
     def push(event: dict | None) -> None:
@@ -219,8 +315,7 @@ async def stream(req: AskRequest, request: Request) -> StreamingResponse:
     def work() -> None:
         try:
             trace, usage = _run(req, listener=push)
-            push({"type": "final", "backend": backend, "framework": orchestrator,
-                  **trace.summary(), **usage})
+            push({"type": "final", "framework": orchestrator, **trace.summary(), **usage})
         except Exception as exc:  # noqa: BLE001 - becomes an `error` frame
             push({"type": "error", **_failure(exc)})
         finally:

@@ -19,7 +19,9 @@ def client():
     from app.main import app
 
     agent._limiter.reset()
-    return TestClient(app)
+    agent.reset_live_pause()
+    yield TestClient(app)
+    agent.reset_live_pause()
 
 
 def _events(response) -> list[dict]:
@@ -305,3 +307,133 @@ def test_stream_runs_on_adk_with_gemini(client, monkeypatch):
     assert [e["text"] for e in events if e["type"] == "report_delta"] == ["Hello ", "from ADK."]
     # skip_summarization: the report is the answer; no supervisor restatement.
     assert events[-1]["final_report"] == "Hello from ADK."
+
+
+# --- free-tier demo: answer on the stub once the Gemini quota is gone ---------
+
+
+def _gemini_out_of_quota(monkeypatch, retry_after=None):
+    """AGENT_BACKEND=gemini, where every live run hits a used-up quota; runs
+    pinned to the stub go through for real. Returns the live-attempt count."""
+    from agents.model import QuotaExhausted, agent_backend
+    from app import agent
+
+    real = agent._run_once
+    attempts = []
+
+    def run_once(req, trace):
+        if agent_backend() == "gemini":
+            attempts.append(req.query)
+            trace.emit({"type": "report_delta", "agent": "report_agent", "text": "Half an ans"})
+            raise QuotaExhausted("used up", retry_after=retry_after)
+        return real(req, trace)
+
+    monkeypatch.setenv("AGENT_BACKEND", "gemini")
+    monkeypatch.setattr(agent, "_run_once", run_once)
+    return attempts
+
+
+def test_used_up_quota_is_answered_on_the_stub_and_labelled(client, monkeypatch):
+    attempts = _gemini_out_of_quota(monkeypatch)
+    events = _events(client.post("/agent/stream", json={"query": QUERY}))
+    types = [e["type"] for e in events]
+
+    assert events[0]["backend"] == "gemini"
+    fallback = next(e for e in events if e["type"] == "fallback")
+    assert fallback["restart"] is True and fallback["to_model"] == "offline stub"
+    # The abandoned Gemini text came before the restart; the stub's answer after.
+    assert types.index("report_delta") < types.index("fallback")
+    assert "delegation" in types[types.index("fallback"):]
+    final = events[-1]
+    assert final["type"] == "final"
+    assert final["backend"] == "stub" and final["degraded"] == "model_quota_exhausted"
+    assert set(final["series_used"]) == {"CPIAUCSL", "UNRATE"}
+    assert attempts == [QUERY]
+
+
+def test_later_questions_skip_gemini_until_the_quota_resets(client, monkeypatch):
+    attempts = _gemini_out_of_quota(monkeypatch)
+    assert client.get("/health").json()["agent_answering_on"] == "gemini"
+    client.post("/agent/ask", json={"query": QUERY})
+    assert client.get("/health").json()["agent_answering_on"] == "stub"
+
+    r = client.post("/agent/ask", json={"query": "Show core PCE since 2021."})
+    assert r.status_code == 200
+    assert r.json()["backend"] == "stub" and r.json()["degraded"] == "model_quota_exhausted"
+    events = _events(client.post("/agent/stream", json={"query": QUERY}))
+    assert events[0]["backend"] == "stub"
+    assert next(e for e in events if e["type"] == "fallback")["restart"] is False
+    assert len(attempts) == 1  # only the first question tried Gemini
+
+
+def test_fallback_can_be_turned_off(client, monkeypatch):
+    from app import agent
+
+    _gemini_out_of_quota(monkeypatch)
+    monkeypatch.setattr(agent.settings, "agent_stub_fallback", False)
+    r = client.post("/agent/ask", json={"query": QUERY})
+    assert r.status_code == 429
+    assert r.json()["detail"]["error"] == "model_quota_exhausted"
+    assert not agent.live_paused()
+
+
+def test_pause_lasts_until_google_says_or_the_pacific_midnight_reset():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app import agent
+
+    pt = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 10, 5, 15, 30, tzinfo=pt).timestamp()
+    try:
+        agent._pause_live(None, now=now)
+        assert agent._live_paused_until == datetime(2026, 10, 6, tzinfo=pt).timestamp()
+        agent.reset_live_pause()
+        agent._pause_live(90.0, now=now)
+        assert agent._live_paused_until == now + 90.0
+        agent._pause_live(10.0, now=now)  # never shortens a pause
+        assert agent._live_paused_until == now + 90.0
+    finally:
+        agent.reset_live_pause()
+
+
+def test_backend_override_is_scoped_to_the_run(monkeypatch):
+    from agents.model import agent_backend, backend_override
+
+    monkeypatch.setenv("AGENT_BACKEND", "gemini")
+    with backend_override("stub"):
+        assert agent_backend() == "stub"
+    assert agent_backend() == "gemini"
+
+
+def test_real_daily_quota_error_on_adk_falls_back_to_the_stub(client, monkeypatch):
+    """No mocked run: ADK's Gemini class raises Google's real per-day 429
+    shape on every model, and the API still answers — on the stub."""
+    import time
+
+    from google.adk.models import Gemini
+    from google.genai import errors
+
+    from app import agent
+    from econ_adk import pipeline
+
+    async def out_of_quota(self, llm_request, stream=False):
+        raise errors.ClientError(429, {"error": {"code": 429, "details": [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+             "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "17000s"},
+        ]}})
+        yield  # pragma: no cover
+
+    monkeypatch.setenv("AGENT_BACKEND", "gemini")
+    monkeypatch.setenv("AGENT_FRAMEWORK", "adk")
+    monkeypatch.setattr(pipeline, "GEMINI_FALLBACK_MODELS", [])
+    monkeypatch.setattr(Gemini, "generate_content_async", out_of_quota)
+
+    events = _events(client.post("/agent/stream", json={"query": QUERY}))
+    final = events[-1]
+    assert final["type"] == "final", events
+    assert final["backend"] == "stub" and final["degraded"] == "model_quota_exhausted"
+    assert "Evidence" in final["final_report"]
+    # Paused for Google's own estimate, not forever.
+    assert 16900 < agent._live_paused_until - time.time() <= 17000

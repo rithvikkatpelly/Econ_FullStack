@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # run gets its own, separate from SESSION_TOKEN_BUDGET, which the tool
     # endpoints share.
     agent_run_token_budget: int = 30000
+    # On Gemini, answer on the offline stub once the model's quota is used up
+    # (labelled in the response) instead of failing the question. What keeps a
+    # free-tier demo usable after its ~20 requests/day. See app/agent.py.
+    agent_stub_fallback: bool = True
 
     @property
     def agent_model_configured(self) -> bool:

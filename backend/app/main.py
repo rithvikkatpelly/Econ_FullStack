@@ -170,6 +170,8 @@ def health() -> dict:
     - ``agent_backend`` / ``agent_model_configured``: which model drives
       ``/agent/*`` and whether its credentials resolved (a Gemini key, or
       Vertex AI mode) — again never the value.
+    - ``agent_answering_on``: the backend the next question will actually
+      run on — ``stub`` while a used-up Gemini quota has paused live runs.
 
     There's no database in this project (backend/app is stateless — FRED is
     the only backing store), so there's nothing else to check here.
@@ -181,6 +183,7 @@ def health() -> dict:
         "agent_backend": agent.backend_name(),
         "agent_framework": agent.framework(),
         "agent_model_configured": settings.agent_model_configured,
+        "agent_answering_on": agent.effective_backend(),
     }
 
 
