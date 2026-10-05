@@ -1,0 +1,42 @@
+# Free public demo — the API on Render's free plan (no credit card).
+#
+# Render → New → Blueprint → pick this repo. It builds backend/Dockerfile
+# from the repo root and redeploys on every push to main. Render asks for the
+# `sync: false` values once, in its dashboard; they never live in git.
+#
+# Free-plan facts this config is built around: the service sleeps after 15
+# idle minutes (the frontend shows "waking the server" for the ~1 min cold
+# start), and 512 MB RAM — hence one agent run at a time.
+#
+# The model is the Gemini API free tier (~20 requests/day per model, ~10
+# requests per question). When the day's quota is gone the API answers on the
+# offline stub and labels it (AGENT_STUB_FALLBACK, on by default), so the demo
+# never just breaks. See DEPLOYMENT.md, "Free public demo".
+services:
+  - type: web
+    name: econ-data-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: AGENT_BACKEND
+        value: gemini
+      - key: AGENT_FRAMEWORK
+        value: adk
+      - key: GEMINI_API_KEY      # https://aistudio.google.com/apikey (free)
+        sync: false
+      - key: FRED_API_KEY        # https://fred.stlouisfed.org/docs/api/api_key.html (free)
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS  # the Firebase Hosting URL, e.g. https://PROJECT.web.app
+        sync: false
+      # Spend the small daily quota on several visitors, not one.
+      - key: AGENT_MAX_CONCURRENT_RUNS
+        value: "1"
+      - key: AGENT_RATE_LIMIT_PER_MIN
+        value: "2"
+      - key: AGENT_RATE_LIMIT_BURST
+        value: "2"

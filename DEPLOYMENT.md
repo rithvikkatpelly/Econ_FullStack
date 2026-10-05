@@ -4,6 +4,92 @@ The repo has three runnable surfaces. Only the **HTTP API + frontend** are
 meant to be *hosted*; the MCP server runs on the user's own machine next to
 Claude Desktop, and the Streamlit page is a local demo.
 
+## Free public demo (no billing)
+
+A public demo that costs nothing and needs no credit card: the API on
+**Render's free plan**, the frontend on **Firebase Hosting** (Spark plan),
+the agents on the **Gemini API free tier**.
+
+```
+Firebase Hosting (static React) ──HTTP/SSE──▶ Render free web service (backend/Dockerfile)
+                                                 ├─▶ FRED API
+                                                 └─▶ Gemini API (free tier) ─┐ quota gone?
+                                                     offline stub ◀──────────┘ answer here, labelled
+```
+
+**Limits to know about:**
+
+- **Gemini free tier:** ~20 requests/day per model and one question is ~10
+  requests, so roughly two live answers a day (more with the fallback models,
+  each of which has its own quota). After that the API answers on the offline
+  stub (`AGENT_STUB_FALLBACK`, on by default): same agents, same real FRED
+  calls, a rule-based planner instead of the model. The UI says so on the
+  answer, and the API stops trying Gemini until the quota resets (Google's
+  `retryDelay`, else midnight Pacific, when Gemini API daily quotas reset).
+- **Render free plan:** sleeps after 15 idle minutes; the first visit after
+  that waits ~1 minute (the page shows "Waking the server"). 512 MB RAM — the
+  API peaks around 150 MB on a run — and one agent run at a time
+  (`render.yaml`).
+
+**What's committed:** `render.yaml` (Blueprint: Docker build, `/health`
+check, env vars, tight agent rate limits), `firebase.json` (serve
+`frontend/dist`, cache hashed assets forever and `index.html` never),
+`.github/workflows/demo.yml` (build with the API URL baked in, publish to
+Firebase; skipped until configured).
+
+### 1. API on Render (~5 min)
+
+1. Sign up at https://render.com with GitHub (no card needed for the free plan).
+2. **New → Blueprint**, pick the `Econ_FullStack` repo. Render reads
+   `render.yaml` and asks for three values:
+   - `GEMINI_API_KEY` — https://aistudio.google.com/apikey
+   - `FRED_API_KEY` — https://fred.stlouisfed.org/docs/api/api_key.html
+   - `CORS_ALLOWED_ORIGINS` — put `https://YOUR_FIREBASE_PROJECT.web.app`
+     (you'll know it after step 2; you can edit it then).
+3. Deploy. Check `https://econ-data-api-XXXX.onrender.com/health`:
+   `fred_api_key_configured: true`, `agent_backend: "gemini"`,
+   `agent_model_configured: true`.
+
+From then on every push to `main` redeploys the API.
+
+### 2. Frontend on Firebase Hosting (~10 min)
+
+```bash
+npm install -g firebase-tools
+firebase login
+firebase projects:create econ-data-demo-XXXX   # any globally unique id
+firebase init hosting:github                   # in the repo root
+```
+
+`firebase init hosting:github` creates a service account and stores it as the
+`FIREBASE_SERVICE_ACCOUNT_...` secret in the GitHub repo. When it asks to
+overwrite `firebase.json` or write workflow files, say **no** — this repo
+already has both. Then in GitHub → Settings → Secrets and variables → Actions:
+
+| Kind | Name | Value |
+|---|---|---|
+| Secret | `FIREBASE_SERVICE_ACCOUNT` | the service-account JSON (rename the secret the CLI made, or paste the key) |
+| Variable | `FIREBASE_PROJECT_ID` | `econ-data-demo-XXXX` |
+| Variable | `DEMO_API_URL` | `https://econ-data-api-XXXX.onrender.com` (no trailing slash) |
+
+Run **Actions → Deploy demo frontend → Run workflow** (afterwards it runs on
+every push that touches `frontend/`). The site is at
+`https://econ-data-demo-XXXX.web.app`; make sure that exact origin is in
+Render's `CORS_ALLOWED_ORIGINS`.
+
+### 3. Check it
+
+Ask a question on the site. The answer's footer shows `adk · gemini`. Once
+the day's quota is gone it shows `adk · stub` with the quota notice, and
+`/health` reports `agent_answering_on: "stub"` until the reset. (An invalid
+key won't trigger this: that's an auth error and fails the question by
+design.) The fallback is covered end to end in `tests/test_agent_api.py`
+(`test_real_daily_quota_error_on_adk_falls_back_to_the_stub`).
+
+---
+
+## Cloud Run + Vertex AI (needs billing)
+
 ```
 frontend/ (Cloud Run, nginx) ──HTTP/SSE──▶ backend/app (Cloud Run, FastAPI) ──▶ FRED API
                                               │   └─ /agent/* ──▶ Gemini (Vertex AI)

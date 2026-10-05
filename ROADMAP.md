@@ -92,11 +92,20 @@ reads as a development story rather than one drop.
       signatures (verified live); a failover now re-signs only the turns the
       new model didn't produce with `skip_thought_signature_validator`
 
+- [x] **Billing-free public demo, configured** — `render.yaml` (API on
+      Render's free plan), `firebase.json` + `demo.yml` (frontend on Firebase
+      Hosting), Gemini API free tier. A used-up quota no longer fails the
+      question: the API reruns it on the offline stub (per-run
+      `backend_override`, a ContextVar), labels it (`degraded`, a UI notice,
+      a `restart` fallback event that clears the half-streamed answer) and
+      skips Gemini until the reset (Google's `retryDelay`, else midnight
+      Pacific); `/health` reports `agent_answering_on`. "Waking the server"
+      banner for the free host's cold start.
+
 ### Next
 
-- [ ] Free public demo without billing: frontend on Firebase Hosting, API on
-      a free container host, Gemini API free tier with automatic fallback to
-      the offline stub when the day's quota is gone
+- [ ] Go live: create the Render service and Firebase project
+      (DEPLOYMENT.md, "Free public demo") and link the URL from the README
 - [ ] Publish a small live Gemini eval (fits the free tier: ~8 cases)
 
 - [ ] Inherit the earlier *period* in follow-ups on the stub, not just the
