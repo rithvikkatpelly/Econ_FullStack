@@ -67,6 +67,7 @@ from agents.model import (
     _mark_overloaded,
     _quota_wait,
     _retry_delay,
+    agent_backend,
     own_signatures,
     resign_foreign_turns,
 )
@@ -356,7 +357,7 @@ class ResilientGemini(Gemini):
 
 
 def _model_for(role: str, trace: Trace) -> BaseLlm:
-    backend = os.environ.get("AGENT_BACKEND", "stub").strip().lower()
+    backend = agent_backend()
     if backend == "anthropic":
         raise ValueError(
             "The ADK pipeline runs on Gemini or the offline stub; "
@@ -387,7 +388,7 @@ def _model_for(role: str, trace: Trace) -> BaseLlm:
 
 
 def _content_config(role: str) -> types.GenerateContentConfig | None:
-    if os.environ.get("AGENT_BACKEND", "stub").strip().lower() != "gemini":
+    if agent_backend() != "gemini":
         return None
     return types.GenerateContentConfig(
         thinking_config=types.ThinkingConfig(thinking_level=_EFFORT_BY_ROLE.get(role, "medium"))

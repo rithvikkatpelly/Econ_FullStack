@@ -14,7 +14,7 @@ import os
 
 from agents import conversation, specialists
 from agents.base import Agent
-from agents.model import Model, make_model
+from agents.model import Model, agent_backend, make_model
 from agents.trace import Trace
 
 DELEGATION_TARGETS = ["economic_data_agent", "research_agent", "risk_agent", "report_agent"]
@@ -118,7 +118,7 @@ def framework() -> str:
     Development Kit, src/econ_adk — the default) or "native" (this package).
     Claude runs on the native one only (ADK reaches Claude through Vertex AI,
     which this project doesn't use), so AGENT_BACKEND=anthropic implies it."""
-    if os.environ.get("AGENT_BACKEND", "stub").strip().lower() == "anthropic":
+    if agent_backend() == "anthropic":
         return "native"
     chosen = os.environ.get("AGENT_FRAMEWORK", "adk").strip().lower()
     return chosen if chosen in ("adk", "native") else "adk"

@@ -9,8 +9,9 @@ Model abstraction for the agent loop.
   * `StubModel` — a deterministic planner (agents/stub.py) so the evaluation
     harness, CI, and the demo run with no API key and no network.
 
-`make_model(role)` picks one from `AGENT_BACKEND` (`stub` | `anthropic` |
-`gemini`); anything else falls back to the stub.
+`make_model(role)` picks one from `agent_backend()` — `AGENT_BACKEND`
+(`stub` | `anthropic` | `gemini`), unless `backend_override` pinned another
+for the current run; anything else falls back to the stub.
 
 The loop's message history is always Anthropic-shaped (`tool_use` /
 `tool_result` content blocks — see agents/base.py). `GeminiModel` translates
@@ -20,15 +21,39 @@ the evals are provider-agnostic.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 import cost_tracker
+
+# A run can be pinned to another backend than AGENT_BACKEND (the API answers on
+# the stub once the day's Gemini quota is gone). A ContextVar, not os.environ,
+# so it follows the run into asyncio tasks and leaves concurrent runs alone.
+_backend_override: ContextVar[str | None] = ContextVar("agent_backend_override", default=None)
+
+
+def agent_backend() -> str:
+    """The backend for the current run: an override, else AGENT_BACKEND."""
+    chosen = _backend_override.get() or os.environ.get("AGENT_BACKEND", "stub")
+    return chosen.strip().lower() or "stub"
+
+
+@contextlib.contextmanager
+def backend_override(backend: str) -> Iterator[None]:
+    """Run the enclosed code on `backend`, whatever AGENT_BACKEND says."""
+    token = _backend_override.set(backend)
+    try:
+        yield
+    finally:
+        _backend_override.reset(token)
+
 
 # Default Claude model for live runs. Opus 5 per the project's API guidance.
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
@@ -612,7 +637,7 @@ class StubModel(Model):
 
 
 def make_model(role: str) -> Model:
-    backend = os.environ.get("AGENT_BACKEND", "stub").strip().lower()
+    backend = agent_backend()
     if backend == "anthropic":
         return AnthropicModel(role)
     if backend == "gemini":
