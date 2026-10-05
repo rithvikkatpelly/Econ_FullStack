@@ -73,7 +73,9 @@ export function AskAgent({ open }: { open: OpenExplorer }) {
               next.backend = event.backend;
               next.framework = event.framework;
             }
-            if (event.type === "final") return { ...next, status: "done", result: event };
+            // Gemini's quota ran out mid-answer: the stub starts over.
+            if (event.type === "fallback" && event.restart) next.draft = "";
+            if (event.type === "final") return { ...next, status: "done", backend: event.backend, result: event };
             if (event.type === "error") return { ...next, status: "error", error: new ApiError(502, event, "") };
             return next;
           }),
@@ -204,6 +206,13 @@ function TurnView({ turn, open }: { turn: Turn; open: OpenExplorer }) {
       {turn.status === "error" && <ErrorNotice error={turn.error} />}
       {turn.status === "stopped" && <div className="notice">Stopped. The agents may finish in the background.</div>}
 
+      {turn.result?.degraded === "model_quota_exhausted" && (
+        <div className="notice">
+          Today's free Gemini quota is used up, so the offline stub answered this one: the same agents and real data
+          calls, with a rule-based planner instead of the model. Live answers come back after the quota resets.
+        </div>
+      )}
+
       {turn.result && (
         <div className="answer">
           <Report text={turn.result.final_report} />
@@ -282,8 +291,8 @@ function describe(e: AgentEvent): ReactNode {
       return (
         <span className="muted">
           <span className="mono">{e.from_model}</span>{" "}
-          {e.reason === "quota_exhausted" ? "is out of quota" : "is overloaded"} — switched to{" "}
-          <span className="mono">{e.to_model}</span>
+          {e.reason === "quota_exhausted" ? "is out of quota" : "is overloaded"} —{" "}
+          {e.restart ? "starting over on" : "switched to"} <span className="mono">{e.to_model}</span>
         </span>
       );
     case "agent_output":

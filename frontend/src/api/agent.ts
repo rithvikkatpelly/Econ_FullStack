@@ -25,7 +25,15 @@ export type AgentEvent =
   | ({ type: "agent_output"; agent: AgentName; output: string } & Timed)
   | ({ type: "report_delta"; agent: AgentName; text: string } & Timed)
   | ({ type: "waiting"; agent: AgentName; reason: string; seconds: number } & Timed)
-  | ({ type: "fallback"; agent: AgentName; reason: string; from_model: string; to_model: string } & Timed)
+  | ({
+      type: "fallback";
+      agent: AgentName | "supervisor";
+      reason: string;
+      from_model: string;
+      to_model: string;
+      /** The answer so far is void; the run starts over (on the offline stub). */
+      restart?: boolean;
+    } & Timed)
   | ({ type: "final"; backend: string; framework?: string } & AgentResult & Timed)
   | ({ type: "error" } & ApiErrorBody & Timed);
 
@@ -39,6 +47,8 @@ export interface AgentResult {
   /** Tool-data tokens this run pulled, against its own per-run budget. */
   data_tokens: number;
   data_token_budget: number;
+  /** Set when the configured model couldn't answer and the stub did. */
+  degraded?: string | null;
 }
 
 /** Split an SSE buffer into complete `data:` payloads; returns the parsed

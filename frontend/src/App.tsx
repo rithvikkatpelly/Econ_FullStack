@@ -12,16 +12,24 @@ import { Nav, type ApiState } from "./components/Nav";
 import type { ExplorerRequest, OpenExplorer } from "./explorer";
 import { useSnapshots } from "./useSnapshots";
 
+const LOCAL_API = /\/\/(localhost|127\.0\.0\.1)[:/]/.test(API_BASE_URL);
+
 export default function App() {
   const [api, setApi] = useState<ApiState>({ status: "checking" });
   const [request, setRequest] = useState<ExplorerRequest | null>(null);
+  const [slowStart, setSlowStart] = useState(false);
   const { items, loading } = useSnapshots();
 
   useEffect(() => {
+    // The public demo's API sleeps when idle and takes up to a minute to wake;
+    // say so instead of looking broken.
+    const timer = setTimeout(() => setSlowStart(true), 3000);
     fetch(`${API_BASE_URL}/health`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((b) => setApi({ status: "up", offline: Boolean(b.offline) }))
-      .catch(() => setApi({ status: "down" }));
+      .catch(() => setApi({ status: "down" }))
+      .finally(() => clearTimeout(timer));
+    return () => clearTimeout(timer);
   }, []);
 
   const open: OpenExplorer = useCallback((req) => {
@@ -40,10 +48,22 @@ export default function App() {
           <strong>Demo mode</strong> — you're seeing built-in sample numbers, not real economic figures.
         </div>
       )}
+      {api.status === "checking" && slowStart && (
+        <div className="banner" role="status">
+          <strong>Waking the server</strong> — the free demo API sleeps when nobody's using it. This takes up to a
+          minute, once.
+        </div>
+      )}
       {api.status === "down" && (
         <div className="banner banner-bad" role="alert">
-          <strong>Can't reach the data service.</strong> If you're running locally, start the API:{" "}
-          <code>cd backend &amp;&amp; uvicorn app.main:app</code>
+          <strong>Can't reach the data service.</strong>{" "}
+          {LOCAL_API ? (
+            <>
+              If you're running locally, start the API: <code>cd backend &amp;&amp; uvicorn app.main:app</code>
+            </>
+          ) : (
+            "Try reloading in a minute."
+          )}
         </div>
       )}
       <Nav api={api} />
