@@ -121,23 +121,48 @@ def _is_analytical(text: str) -> bool:
     return any(h in text.lower() for h in _ANALYSIS_HINTS)
 
 
+def _period_phrase(text: str) -> str | None:
+    """The part of `text` that `_date_range` reads a period from, as a phrase
+    that reads the same way when appended to another question; None if
+    `text` names no period (and `_date_range` would use its default)."""
+    m = re.search(r"(?:last|past|previous)\s+\d{1,2}\s+years?", text, re.IGNORECASE)
+    if m:
+        return m.group(0)
+    years = sorted({int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", text)})
+    if len(years) >= 2:
+        return f"from {years[0]} to {years[-1]}"
+    if years:
+        return f"since {years[0]}"
+    return None
+
+
 def _resolve_follow_up(message: str) -> tuple[str, bool]:
     """(the question to plan from, whether it's analytical).
 
-    A follow-up that names no series of its own ("what about since 2015?")
-    inherits the series of the most recent earlier turn that had any, and
-    that turn's analytical intent. Its own dates still win — the stub does not
-    inherit a period."""
+    A follow-up inherits what it leaves out from the most recent earlier turn
+    that has it: one that names no series ("what about since 2015?") takes
+    that turn's series and analytical intent; one that names no period ("and
+    core CPI?") takes its period. Whatever the follow-up does say wins."""
     history, question = conversation.split(message)
     analytical = _is_analytical(question)
-    if not history or _series_for(question):
+    if not history:
         return question, analytical
-    for prior_q, prior_a in reversed(history):
-        prior = _series_in_text(prior_a) or _series_for(prior_q)
-        if prior:
-            inherited = f"{question} (follow-up on {', '.join(prior)})"
-            return inherited, analytical or _is_analytical(prior_q)
-    return question, analytical
+    notes = []
+    if not _series_for(question):
+        for prior_q, prior_a in reversed(history):
+            prior = _series_in_text(prior_a) or _series_for(prior_q)
+            if prior:
+                notes.append(f"follow-up on {', '.join(prior)}")
+                analytical = analytical or _is_analytical(prior_q)
+                break
+    if _period_phrase(question) is None:
+        for prior_q, _ in reversed(history):
+            if period := _period_phrase(prior_q):
+                notes.append(period)
+                break
+    if not notes:
+        return question, analytical
+    return f"{question} ({'; '.join(notes)})", analytical
 
 
 def _plan_supervisor(messages: list[dict]) -> ModelResponse:

@@ -80,6 +80,37 @@ def test_follow_up_naming_its_own_series_does_not_inherit():
     assert trace.series_used == ["GDP"]
 
 
+def test_follow_up_without_a_period_keeps_the_earlier_one():
+    """ "and core CPI?" after a question about 2016-2020 means 2016-2020."""
+    first = {"query": "Compare CPI and unemployment from 2016 to 2020.", "answer": "…"}
+    trace = run("And core PCE?", history=[first])
+    assert trace.series_used == ["PCEPILFE"]
+    call = trace.leaf_calls("economic_data_agent")[0]
+    period = (call.arguments["start_date"], call.arguments["end_date"])
+    assert period == ("2016-01-01", "2020-12-01")
+
+
+def test_period_comes_from_the_latest_turn_that_had_one():
+    from datetime import date
+
+    turns = [
+        {"query": "Show GDP from 2010 to 2012.", "answer": "…"},
+        {"query": "Show unemployment over the last 3 years.", "answer": "…"},
+        {"query": "Thanks, and CPI?", "answer": "…"},
+    ]
+    trace = run("And the 10-year yield?", history=turns)
+    call = trace.leaf_calls("economic_data_agent")[0]
+    assert call.arguments["start_date"].startswith(str(date.today().year - 3))
+
+
+def test_inheriting_both_series_and_period():
+    first = {"query": "Compare CPI and unemployment from 2016 to 2020.", "answer": "…"}
+    trace = run("What drove that?", history=[first])
+    assert set(trace.series_used) == {"CPIAUCSL", "UNRATE"}
+    call = trace.leaf_calls("economic_data_agent")[0]
+    assert call.arguments["start_date"] == "2016-01-01"
+
+
 def test_follow_up_with_unusable_history_falls_back_to_the_question():
     trace = run("Show core PCE since 2021.", history=[{"query": "hello", "answer": "hi"}])
     assert trace.series_used == ["PCEPILFE"]
