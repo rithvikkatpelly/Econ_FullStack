@@ -25,11 +25,13 @@ def test_select_cases_without_a_cap_is_the_whole_dataset():
 
 @pytest.fixture
 def one_case_explodes(monkeypatch):
-    """Make the first selected case raise mid-run, like a provider outage."""
+    """Make the first case a 4-case run selects raise mid-run, like a
+    provider outage."""
     from agents.supervisor import Supervisor
 
     monkeypatch.setenv("AGENT_FRAMEWORK", "native")  # patches the native Supervisor
-    first = runner.load_cases()[0]["query"]
+    first_case = runner.select_cases(runner.load_cases(), 4)[0]
+    first = first_case["query"]
     real_run = Supervisor.run
 
     def run(self, query, history=None):
@@ -38,7 +40,7 @@ def one_case_explodes(monkeypatch):
         return real_run(self, query, history)
 
     monkeypatch.setattr(Supervisor, "run", run)
-    return runner.load_cases()[0]["id"]
+    return first_case["id"]
 
 
 def test_a_crashing_case_is_recorded_and_the_suite_continues(one_case_explodes):

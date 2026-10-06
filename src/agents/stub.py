@@ -25,6 +25,9 @@ import catalog
 from agents import conversation
 from agents.model import ModelResponse, ToolRequest
 
+# compare_series takes at most this many (security.validate_series_list).
+MAX_COMPARE = 4
+
 _ANALYSIS_HINTS = (
     "analy", "assess", "risk", "recession", "explain", "why", "outlook",
     "trend", "relationship", "changed", "compare", "impact", "signal",
@@ -72,6 +75,19 @@ def _series_in_text(text: str) -> list[str]:
 
 def _series_for(text: str) -> list[str]:
     return _series_in_text(text) or catalog.resolve(text)
+
+
+def _requested_series(question: str) -> list[str]:
+    """Every series a question asks for, named by ID or by concept, in the
+    order they appear. ("INJTEST and CPI" is both; `_series_for` would stop
+    at the ID and drop CPI.)"""
+    hits = {sid: question.find(sid) for sid in _series_in_text(question)}
+    lowered = question.lower()
+    for sid in catalog.resolve(question):
+        if sid not in hits:
+            aliases = [a for a in catalog.CATALOG[sid].aliases if a in lowered]
+            hits[sid] = min((lowered.find(a) for a in aliases), default=len(question))
+    return sorted(hits, key=hits.get)
 
 
 def _date_range(text: str) -> tuple[str, str, str]:
@@ -148,7 +164,7 @@ def _resolve_follow_up(message: str) -> tuple[str, bool]:
     if not history:
         return question, analytical
     notes = []
-    if not _series_for(question):
+    if not _requested_series(question):
         for prior_q, prior_a in reversed(history):
             prior = _series_in_text(prior_a) or _series_for(prior_q)
             if prior:
@@ -204,9 +220,16 @@ def _plan_economic_data_agent(messages: list[dict]) -> ModelResponse:
 
     fetched = any(n in called for n in ("get_series_observations", "compare_series"))
     if fetched:
-        return _text(_summarize_observations(results))
+        summary = _summarize_observations(results)
+        dropped = _requested_series(task)[MAX_COMPARE:]
+        if dropped:
+            summary += (
+                f"\nNot fetched: {', '.join(dropped)} — one comparison holds at most "
+                f"{MAX_COMPARE} series; ask about these separately."
+            )
+        return _text(summary)
 
-    series = _series_for(task)
+    series = _requested_series(task)
 
     if not series and "search_series" not in called:
         return _tool("econ", messages, "search_series", {"search_text": task[:120]})
@@ -220,7 +243,8 @@ def _plan_economic_data_agent(messages: list[dict]) -> ModelResponse:
     if len(series) >= 2:
         return _tool(
             "econ", messages, "compare_series",
-            {"series_ids": series[:4], "start_date": start, "end_date": end, "frequency": freq},
+            {"series_ids": series[:MAX_COMPARE], "start_date": start, "end_date": end,
+             "frequency": freq},
         )
     return _tool(
         "econ", messages, "get_series_observations",
@@ -278,7 +302,11 @@ def _plan_risk_agent(messages: list[dict]) -> ModelResponse:
 
 def _plan_report_agent(messages: list[dict]) -> ModelResponse:
     task = _first_user_text(messages)
-    ids = _series_in_text(task)
+    # Cite what was fetched (the data agent's "SID: N points" lines), not
+    # every ID the findings mention: a request over the comparison cap names
+    # series it never fetched.
+    fetched = list(dict.fromkeys(re.findall(r"\b([A-Z][A-Z0-9]{2,}): \d+ points", task)))
+    ids = fetched or _series_in_text(task)
     m = re.search(r"RISK_SIGNAL:\s*([A-Za-z]+)", task)
     signal = m.group(1) if m else "not assessed"
     body = (
@@ -287,7 +315,16 @@ def _plan_report_agent(messages: list[dict]) -> ModelResponse:
         "Gemini or Claude, produces the full write-up.)"
     )
     evidence = "\n".join(f"  - {sid}" for sid in ids) or "  - (none)"
-    return _text(f"{body}\n\nEvidence\nSeries used:\n{evidence}\nRisk signal: {signal}")
+    report = f"{body}\n\nEvidence\nSeries used:\n{evidence}\nRisk signal: {signal}"
+    if skipped := re.search(r"Not fetched: ([A-Z0-9, ]+)", task):
+        # By name, not ID: the report only cites series it actually fetched.
+        names = [catalog.CATALOG[sid].title if sid in catalog.CATALOG else sid
+                 for sid in re.findall(r"[A-Z0-9]+", skipped.group(1))]
+        report += (
+            f"\nNot covered: {', '.join(names)} (one comparison holds at most "
+            f"{MAX_COMPARE} series; ask about these separately)."
+        )
+    return _text(report)
 
 
 # --- result parsing helpers -------------------------------------------
