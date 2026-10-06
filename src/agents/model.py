@@ -69,6 +69,27 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 GEMINI_RETRY_ATTEMPTS = int(os.environ.get("GEMINI_RETRY_ATTEMPTS", "4"))
 _TRANSIENT_CODES = [408, 500, 502, 503, 504]
 
+# Seconds a request may sit without progress (connect, or between bytes read)
+# before it fails as a dropped connection and is retried. Without it, found on
+# a live run, one silent connection hung a question forever.
+GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "120"))
+
+
+def gemini_http_options():
+    """The HTTP policy every Gemini client here uses: SDK retries on
+    transient statuses, and a timeout."""
+    from google.genai import types
+
+    return types.HttpOptions(
+        timeout=int(GEMINI_TIMEOUT_S * 1000),  # the SDK takes milliseconds
+        retry_options=types.HttpRetryOptions(
+            attempts=GEMINI_RETRY_ATTEMPTS,
+            initial_delay=1.0,
+            max_delay=20.0,
+            http_status_codes=_TRANSIENT_CODES,
+        ),
+    )
+
 # 429 is handled separately (GeminiModel._with_quota_retry): Google says how
 # long to wait (RetryInfo), often ~60 s on a per-minute quota — the free tier
 # allows 5 requests/min/model, less than one agent run — and a blind 1-20 s
@@ -277,22 +298,12 @@ class GeminiModel(Model):
     def __init__(self, role: str, client=None, model: str = GEMINI_MODEL):
         super().__init__(role)
         from google import genai  # local import so the stub path needs no dependency
-        from google.genai import types
 
         # Primary first, then the fallbacks; start on the first one whose
         # circuit breaker isn't tripped.
         self._chain = [model] + [m for m in GEMINI_FALLBACK_MODELS if m != model]
         model = next((m for m in self._chain if not _is_overloaded(m)), self._chain[-1])
-        self._client = client or genai.Client(
-            http_options=types.HttpOptions(
-                retry_options=types.HttpRetryOptions(
-                    attempts=GEMINI_RETRY_ATTEMPTS,
-                    initial_delay=1.0,
-                    max_delay=20.0,
-                    http_status_codes=_TRANSIENT_CODES,
-                )
-            )
-        )
+        self._client = client or genai.Client(http_options=gemini_http_options())
         # Set by Agent so a quota wait shows up in the trace / UI timeline.
         self.notify: Callable[[dict], None] | None = None
         self._sleep = time.sleep

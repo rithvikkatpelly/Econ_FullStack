@@ -57,7 +57,6 @@ from agents import conversation, specialists, stub
 from agents.base import with_today
 from agents.model import (
     _EFFORT_BY_ROLE,
-    _TRANSIENT_CODES,
     GEMINI_FALLBACK_MODELS,
     GEMINI_MODEL,
     GEMINI_QUOTA_RETRIES,
@@ -70,6 +69,7 @@ from agents.model import (
     _quota_wait,
     _retry_delay,
     agent_backend,
+    gemini_http_options,
     own_signatures,
     resign_foreign_turns,
 )
@@ -379,10 +379,9 @@ def _model_for(role: str, trace: Trace) -> BaseLlm:
         return StubLlm(model=f"stub-{role}", role=role)
     model = ResilientGemini(
         model=os.environ.get("GEMINI_MODEL", GEMINI_MODEL),
-        retry_options=types.HttpRetryOptions(
-            attempts=GEMINI_RETRY_ATTEMPTS, initial_delay=1.0, max_delay=20.0,
-            http_status_codes=_TRANSIENT_CODES,
-        ),
+        # Replaces ADK's own HttpOptions (retries only) with ours: the same
+        # retries plus a timeout.
+        client_kwargs={"http_options": gemini_http_options()},
     )
     model._notify = lambda event: trace.emit({**event, "agent": role})
 

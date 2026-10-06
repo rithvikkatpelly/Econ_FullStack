@@ -334,3 +334,17 @@ def test_no_retry_or_fallback_once_text_was_streamed(monkeypatch, scripted_gemin
     m._on_text = lambda _t: None
     with pytest.raises(errors.ServerError):
         _drive(m)
+
+
+def test_both_gemini_clients_have_a_timeout_and_retries(monkeypatch):
+    """Found live: with no timeout, one silent connection hung a question
+    forever. A timeout turns it into a dropped connection, which is retried."""
+    from agents.model import GEMINI_TIMEOUT_S, GeminiModel
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_BACKEND", "gemini")
+    for client in (pipeline._model_for("supervisor", Trace()).api_client,
+                   GeminiModel("supervisor")._client):
+        options = client._api_client._http_options
+        assert options.timeout == int(GEMINI_TIMEOUT_S * 1000)
+        assert 503 in options.retry_options.http_status_codes
