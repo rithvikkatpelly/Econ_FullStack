@@ -22,7 +22,9 @@ on live Gemini through the Gemini API. A **billing-free public demo** is
 configured (API on Render's free plan, frontend on Firebase Hosting, Gemini
 free tier with an automatic, labelled fallback to the offline stub when the
 day's quota runs out), and the Cloud Run + Vertex AI deployment is scripted;
-neither is live yet (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+neither is live yet (see [DEPLOYMENT.md](DEPLOYMENT.md)). The first live
+Gemini eval is published as-is, misses included:
+[docs/live-eval.md](docs/live-eval.md).
 
 It runs end to end with **no API key** — a deterministic planner stands in for
 the model and a synthetic fixture stands in for FRED — which is what lets the
@@ -63,7 +65,7 @@ evaluation suite be hermetic and reproducible.
 | **Multi-agent systems** | Supervisor + four specialists (one pipeline), and a second orchestrator → Data/News Agent(s) → Analysis Agent pipeline that fans out to *heterogeneous* sources concurrently and reasons across them — [§3](#3-multi-agent-orchestration) |
 | **AI safety** | Input validation, prompt-injection containment (FRED metadata *and* adversarial news headlines), secret redaction, least-privilege tools, rate limiting, audit log — [§5](#5-security), [Cross-source security](#cross-source-security), [SECURITY.md](SECURITY.md) |
 | **Context / cost engineering** | Cache-friendly prompt layout, result shaping, a pre-return token budget with a shrink fallback, per-role effort — [§4](#4-context-and-cost) |
-| **Evaluation** | 20-case dataset with expected tool-call sequences, six scored metrics, generated report, CI gate — [§6](#6-evaluation) |
+| **Evaluation** | 25-case dataset (5 adversarial) with expected tool-call sequences, six scored metrics, generated report, CI gate — [§6](#6-evaluation) |
 | **Full-stack delivery** | React + FastAPI, agent progress streamed over SSE into a live activity timeline; Dockerfiles and a Cloud Run + Vertex AI pipeline with keyless Workload Identity Federation (deploy-ready) — [Ask the agent](#ask-the-agent-gemini-full-stack), [DEPLOYMENT.md](DEPLOYMENT.md) |
 | **Production hygiene** | Hermetic tests, deterministic offline mode, `pyproject` + ruff, CI on every push |
 
@@ -367,7 +369,7 @@ supervisor (LlmAgent)
   and `after_model_callback` record delegations, tool calls, outputs and
   tokens exactly as the native supervisor does. So the evals, the SSE
   stream and the UI work on either orchestrator.
-- **Proven equivalent.** `tests/test_adk.py` runs **all 20 eval cases**
+- **Proven equivalent.** `tests/test_adk.py` runs **all 25 eval cases**
   through both orchestrators. It asserts identical delegations, tool calls
   (agent, name, arguments, order), grounding, risk signal and report. CI
   then grades both with `python -m evals --framework adk|native`.
@@ -565,7 +567,7 @@ The six metrics ([`evals/metrics.py`](evals/metrics.py)), each in `[0, 1]`:
 
 ```
 $ python -m evals
-backend=stub  cases=20  pass=20/20 (100%)
+backend=stub  cases=25  pass=25/25 (100%)
   tool_selection         100.0%
   series_grounding       100.0%
   argument_validity      100.0%
@@ -1066,7 +1068,7 @@ src/
     stub.py            the deterministic offline planner
     trace.py           per-run execution trace — what the evals read, and the progress-event source
 evals/
-  dataset.jsonl     20 cases: query + expected tool sequence + expected grounding
+  dataset.jsonl     25 cases: query + expected tool sequence + expected grounding
   runner.py         replay each case through the supervisor, score it
   metrics.py        the six scored metrics
   report.py         aggregate → REPORT.md, non-zero exit on regression

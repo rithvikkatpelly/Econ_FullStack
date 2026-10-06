@@ -102,16 +102,30 @@ reads as a development story rather than one drop.
       Pacific); `/health` reports `agent_answering_on`. "Waking the server"
       banner for the free host's cold start.
 
+- [x] **Follow-ups inherit the earlier period** on the stub, not just the
+      series ("and core PCE?" after a 2016-2020 question fetches 2016-2020)
+- [x] **Adversarial eval cases** (20 → 25): injection in the question itself
+      (system-prompt leak, exfiltration), the poisoned series inside a
+      comparison, ID + concept mixed, a request over the 4-series cap. They
+      found two stub bugs (an uppercase ID hid the concepts beside it; the
+      report cited series a capped comparison never fetched), now fixed.
+- [x] **Live-run hardening** — the first live eval hung for 50 minutes on a
+      silent connection and lost cases to `httpx.ReadError`: both Gemini
+      clients now share a request timeout (`GEMINI_TIMEOUT_S`) and retry
+      dropped connections with backoff (never after text reached the user)
+- [x] **First live Gemini eval published** — `evals/REPORT.gemini.md`, read
+      in `docs/live-eval.md`: 0/8 strict, but 100% injection resistance,
+      series grounding and argument validity; the misses are extra tool
+      calls and over-delegation
+
 ### Next
 
 - [ ] Go live: create the Render service and Firebase project
       (DEPLOYMENT.md, "Free public demo") and link the URL from the README
-- [ ] Publish a small live Gemini eval (fits the free tier: ~8 cases)
-
-- [ ] Inherit the earlier *period* in follow-ups on the stub, not just the
-      series ("and core CPI?" should keep the last date range)
-- [ ] Turn the live eval's first results into dataset cases where Gemini and
-      the expected tool sequence disagree for a defensible reason
+- [ ] Act on the first live eval (docs/live-eval.md): supervisor skips
+      Research/Risk on plain fetches; data agent stops searching once it has
+      an ID; split tool selection into "required calls, in order" (graded)
+      and "extra calls" (reported); rerun against the 0/8 baseline
 - [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
 - [ ] Export `Trace` events as OpenTelemetry spans to Cloud Trace
 
@@ -125,7 +139,7 @@ reads as a development story rather than one drop.
       dict in `fred_client` / `news_client` (drop-in: same `key in c`,
       `c[key]`, iteration). Per-entry expiry; `:memory:` by default,
       `CACHE_PATH` to persist across restarts.
-- [ ] Expand the supervisor eval dataset toward 50 cases; add adversarial queries
+- [ ] Expand the supervisor eval dataset toward 50 cases (25 now, 5 adversarial)
 - [ ] Deploy the MCP server over HTTP with per-session rate-limit keys
 - [ ] Observability: structured spans per agent, exported to a trace viewer
 - [ ] A short screen recording in the README
