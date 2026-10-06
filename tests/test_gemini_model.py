@@ -434,6 +434,28 @@ def test_quota_retries_are_bounded():
     assert len(model.slept) == model_mod.GEMINI_QUOTA_RETRIES
 
 
+def test_a_dropped_connection_is_retried_with_backoff():
+    """Found on a live run: httpx.ReadError (no HTTP status, so the SDK's own
+    retries never see it) ended the whole question."""
+    import httpx
+
+    model = _flaky_model([httpx.ReadError("reset"), httpx.ReadError("reset")],
+                         [_response([types.Part(text="ok")])])
+    assert model.turn("s", [{"role": "user", "content": "q"}], []).text == "ok"
+    assert model.slept == [1.0, 2.0]
+
+
+def test_dropped_connection_retries_are_bounded():
+    import httpx
+
+    from agents import model as model_mod
+
+    model = _flaky_model([httpx.ReadError("reset")] * model_mod.GEMINI_RETRY_ATTEMPTS, [])
+    with pytest.raises(httpx.ReadError):
+        model.turn("s", [{"role": "user", "content": "q"}], [])
+    assert len(model.slept) == model_mod.GEMINI_RETRY_ATTEMPTS - 1
+
+
 def test_other_client_errors_are_not_retried():
     bad = errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}})
     model = _flaky_model([bad], [])

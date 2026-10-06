@@ -39,6 +39,7 @@ import uuid
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
+import httpx
 from google.adk.agents import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.models import BaseLlm, Gemini, LlmRequest, LlmResponse
@@ -63,6 +64,7 @@ from agents.model import (
     GEMINI_RETRY_ATTEMPTS,
     ModelResponse,
     QuotaExhausted,
+    _drop_backoff,
     _is_overloaded,
     _mark_overloaded,
     _quota_wait,
@@ -326,7 +328,8 @@ class ResilientGemini(Gemini):
         self, llm_request: LlmRequest, stream: bool, emitted: list[bool]
     ) -> AsyncGenerator[LlmResponse, None]:
         internal_stream = self._on_text is not None
-        for attempt in range(GEMINI_QUOTA_RETRIES + 1):
+        quota_waits = drops = 0
+        while True:
             try:
                 async for response in super().generate_content_async(
                     llm_request, stream or internal_stream
@@ -339,15 +342,24 @@ class ResilientGemini(Gemini):
                         continue  # ADK gets only the final, assembled response
                     yield response
                 return
+            except httpx.TransportError:
+                # A dropped connection (found live: ReadError on a pooled
+                # connection after a quota wait). Not an HTTP status, so the
+                # SDK's own retries never see it.
+                drops += 1
+                if emitted[0] or drops >= GEMINI_RETRY_ATTEMPTS:
+                    raise
+                await _sleep(_drop_backoff(drops))
             except genai_errors.ClientError as exc:
                 if exc.code != 429:
                     raise
                 wait = _quota_wait(exc)
-                if wait is None or attempt == GEMINI_QUOTA_RETRIES or emitted[0]:
+                if wait is None or quota_waits == GEMINI_QUOTA_RETRIES or emitted[0]:
                     raise QuotaExhausted(
                         "The Gemini API quota for this key is used up for now.",
                         retry_after=_retry_delay(exc),
                     ) from exc
+                quota_waits += 1
                 self._emit({"type": "waiting", "reason": "rate_limited", "seconds": round(wait)})
                 await _sleep(wait)
 

@@ -391,25 +391,35 @@ class GeminiModel(Model):
         """Run `call`; on a 429, wait what Google asks (RetryInfo) and retry.
         `can_retry()` is checked first — a stream that already showed the user
         text must not start over."""
+        import httpx
         from google.genai import errors
 
-        for attempt in range(GEMINI_QUOTA_RETRIES + 1):
+        quota_waits = drops = 0
+        while True:
             try:
                 return call()
+            except httpx.TransportError:
+                # A dropped connection: not an HTTP status, so the SDK's own
+                # retries never see it. Retried unless text already reached
+                # the user.
+                drops += 1
+                if drops >= GEMINI_RETRY_ATTEMPTS or not can_retry():
+                    raise
+                self._sleep(_drop_backoff(drops))
             except errors.ClientError as exc:
                 if exc.code != 429:
                     raise
                 wait = _quota_wait(exc)
-                if wait is None or attempt == GEMINI_QUOTA_RETRIES or not can_retry():
+                if wait is None or quota_waits == GEMINI_QUOTA_RETRIES or not can_retry():
                     raise QuotaExhausted(
                         "The Gemini API quota for this key is used up for now.",
                         retry_after=_retry_delay(exc),
                     ) from exc
+                quota_waits += 1
                 if self.notify is not None:
                     self.notify({"type": "waiting", "reason": "rate_limited",
                                  "seconds": round(wait)})
                 self._sleep(wait)
-        raise AssertionError("unreachable")  # pragma: no cover
 
     # --- model fallback on overload ------------------------------------------
     def _with_fallback(self, call: Callable[[], Any], can_retry: Callable[[], bool] = bool):
@@ -582,6 +592,11 @@ def _retry_delay(exc) -> float | None:
             except ValueError:
                 return None
     return None
+
+
+def _drop_backoff(drops: int) -> float:
+    """Seconds before retrying after the `drops`-th dropped connection."""
+    return float(min(2 ** (drops - 1), 8))
 
 
 def _quota_wait(exc) -> float | None:

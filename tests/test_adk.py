@@ -190,6 +190,16 @@ def test_resilient_gemini_waits_out_a_per_minute_quota(scripted_gemini):
     assert events == [{"type": "waiting", "reason": "rate_limited", "seconds": 31}]
 
 
+def test_resilient_gemini_retries_a_dropped_connection(scripted_gemini):
+    import httpx
+
+    script, used = scripted_gemini
+    script += [httpx.ReadError("reset"), "ok"]
+    out = _drive(_model([], []))
+    assert out[0].content.parts[0].text == "ok"
+    assert _SLEPT == [1.0] and used == ["primary", "primary"]
+
+
 def test_resilient_gemini_falls_back_on_overload_and_daily_quota(scripted_gemini):
     script, used = scripted_gemini
     script += [_err(503), "ok"]
