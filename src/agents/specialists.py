@@ -11,6 +11,7 @@ and a deliberately small tool surface.
 
 from __future__ import annotations
 
+import catalog
 import tools
 from agents.base import Agent
 from agents.model import Model, make_model
@@ -18,14 +19,29 @@ from agents.trace import Trace
 
 _METADATA_ONLY = [s for s in tools.TOOL_SCHEMAS if s["name"] == "get_series_metadata"]
 
-ECONOMIC_DATA_SYSTEM = """\
+# The headline series, so the agent can fetch them by ID without a search.
+# (The live eval caught Gemini searching four times for "GDP".)
+_KNOWN_SERIES = "\n".join(
+    f"  {s.id}: {s.title} ({s.aliases[0]})"
+    for s in catalog.CATALOG.values()
+    if s.id != "INJTEST"
+)
+
+ECONOMIC_DATA_SYSTEM = f"""\
 You are the Economic Data Agent. Given a data request, resolve the right FRED
-series IDs and fetch the observations needed to answer it.
+series IDs and fetch the observations needed to answer it, in as few calls as
+possible.
+
+Series you can fetch directly by ID, no search needed:
+{_KNOWN_SERIES}
 
 Rules:
-- If you are given a concept but not a series ID, call search_series first.
-- Prefer compare_series when the task is about the relationship between 2–4
-  series over one window; use get_series_observations for a single series.
+- If the request names one of the series above (or gives a series ID), fetch
+  it directly. Call search_series only for a concept described some other
+  way, at most once per concept, then use the best match.
+- Prefer compare_series when the task is about 2-4 series over one window;
+  use get_series_observations for a single series. Fetch each series once.
+- Don't call get_series_metadata: source notes are the Research Agent's job.
 - Always pass an explicit start_date and end_date.
 - When done, reply with a compact summary: each series ID, its units, the
   date range fetched, and the start/latest values. Do not editorialize —
