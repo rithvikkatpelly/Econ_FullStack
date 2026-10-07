@@ -144,9 +144,14 @@ jobs:
         run: |
           FRONTEND_URL=$(gcloud run services describe "$FRONTEND_SERVICE" \
             --region="$REGION" --format='value(status.url)')
+          # Cloud Run serves each service on two URLs (…-<hash>-uc.a.run.app and
+          # …-<project number>.<region>.run.app); allow the frontend on both.
+          ORIGINS=$(gcloud run services describe "$FRONTEND_SERVICE" --region="$REGION" \
+            --format=json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(json.loads(d["metadata"]["annotations"].get("run.googleapis.com/urls", "[]")) or [d["status"]["url"]]))')
+          # ^;^ makes ";" the list delimiter, so the commas stay in the value.
           gcloud run services update "$BACKEND_SERVICE" \
             --region="$REGION" \
-            --update-env-vars="CORS_ALLOWED_ORIGINS=$FRONTEND_URL"
+            --update-env-vars="^;^CORS_ALLOWED_ORIGINS=$ORIGINS"
           {
             echo "### Deployed"
             echo "- Frontend: $FRONTEND_URL"

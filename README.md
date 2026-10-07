@@ -20,8 +20,9 @@ activity timeline — see [Two orchestrators](#two-orchestrators-adk-and-native)
 and [Ask the agent](#ask-the-agent-gemini-full-stack). It has run end to end
 on live Gemini through the Gemini API. The deployment is all Google too —
 frontend and API on Cloud Run, agents on Gemini through Vertex AI, images in
-Artifact Registry, the FRED key in Secret Manager — scripted and
-**deploy-ready, not deployed yet** (see [DEPLOYMENT.md](DEPLOYMENT.md)). If
+Artifact Registry, the FRED key in Secret Manager, deployed by GitHub
+Actions with keyless Workload Identity Federation. **Live demo: https://econ-data-frontend-kio6fmbpta-uc.a.run.app**
+(see [DEPLOYMENT.md](DEPLOYMENT.md)). If
 the model's quota runs out, questions are answered on the offline stub
 instead of failing, and labelled as such. Live Gemini
 evals are published as-is: the first scored 0/8, and after prompt fixes the
@@ -938,8 +939,7 @@ key to store; a Gemini API key from Secret Manager works too. Until the GCP
 variables exist the deploy job is skipped rather than failed. Full one-time
 setup (GCP project, Artifact Registry, Secret Manager, Vertex AI,
 service accounts, WIF, the exact GitHub secrets/variables to add) is in
-[`DEPLOYMENT.md`](DEPLOYMENT.md); nothing there has been run yet — no live
-deployment exists for this repo today.
+[`DEPLOYMENT.md`](DEPLOYMENT.md). It's live at https://econ-data-frontend-kio6fmbpta-uc.a.run.app.
 
 **Secrets:** the only one the deployed API needs is `FRED_API_KEY`, held in
 **Secret Manager** and wired into the Cloud Run service with

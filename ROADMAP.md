@@ -120,12 +120,17 @@ reads as a development story rather than one drop.
       stops searching; tool selection grades required calls in order and
       reports extras (0 on the rerun). Tokens 117k → 83k.
 
+- [x] **Live on Cloud Run** (https://econ-data-frontend-kio6fmbpta-uc.a.run.app) — project `econ-fullstack-510918`:
+      frontend and API on Cloud Run as dedicated least-privilege service
+      accounts, Gemini on Vertex AI, FRED key in Secret Manager, images in
+      Artifact Registry with a cleanup policy, $5 budget alert, keyless deploys
+      from GitHub. First deploy found two things: the startup probe's 9 s
+      window was too short for a cold start, and CORS needed both of Cloud
+      Run's URLs for the frontend. All Google; the Render + Firebase config
+      was dropped.
+
 ### Next
 
-- [ ] Go live on Cloud Run (project `econ-fullstack-510918`, billing
-      linked): run the DEPLOYMENT.md setup, push; link the URL from the README
-      (an earlier Render + Firebase Hosting config was dropped to keep the
-      hosted stack all Google)
 - [ ] Run the live eval on all 25 cases (needs a couple of fresh days of
       free-tier quota, or Vertex AI once deployed)
 - [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
