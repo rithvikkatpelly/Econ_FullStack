@@ -40,15 +40,19 @@ def aggregate(suite: Suite) -> dict:
         "total_input_tokens": sum(r.input_tokens for r in suite.results),
         "total_output_tokens": sum(r.output_tokens for r in suite.results),
         "projected_total_cost_usd": round(sum(r.projected_cost_usd for r in suite.results), 4),
+        "extra_calls": sum(r.extra_calls for r in suite.results if not r.error),
     }
 
 
 def _case_row(r: CaseResult) -> str:
     mark = "✅" if r.passed else ("💥" if r.error else "❌")
     tools = " → ".join(r.leaf_tools) or (f"error: {r.error}" if r.error else "—")
+    checks = ", ".join(m.replace("_", " ") for m in r.failed_checks)
+    failed = "error" if r.error else (checks or "—")
+    extra = "—" if r.error else str(r.extra_calls)
     return (
-        f"| {mark} | `{r.id}` | {tools} | "
-        f"{','.join(r.series_used) or '—'} | {r.risk_signal or '—'} | "
+        f"| {mark} | `{r.id}` | {tools} | {extra} | "
+        f"{','.join(r.series_used) or '—'} | {r.risk_signal or '—'} | {failed} | "
         f"{r.elapsed_ms:.0f} | {r.input_tokens + r.output_tokens} |"
     )
 
@@ -77,6 +81,9 @@ _Generated {ts} · {run_line}_
 |---|---|
 {metric_lines}
 
+Extra data-agent tool calls beyond the expected ones (reported, not graded):
+**{agg['extra_calls']}** across the suite.
+
 Performance (this run): mean wall time **{agg['mean_latency_ms']:.0f} ms/query**,
 {agg['total_input_tokens'] + agg['total_output_tokens']:,} total tokens,
 projected cost at `claude-opus-5` list prices **${agg['projected_total_cost_usd']:.4f}**
@@ -86,8 +93,8 @@ for the whole suite.
 
 ## Per-case results
 
-| | Case | Data-agent tools | Series | Risk | ms | Tokens |
-|---|---|---|---|---|---|---|
+| | Case | Data-agent tools | Extra | Series | Risk | Failed checks | ms | Tokens |
+|---|---|---|---|---|---|---|---|---|
 {case_lines}
 """
 
@@ -112,5 +119,6 @@ def print_summary(suite: Suite) -> None:
           f"pass={agg['passed']}/{agg['n_cases']} ({agg['pass_rate'] * 100:.0f}%)")
     for m, v in agg["metrics"].items():
         print(f"  {m:<22} {v * 100:5.1f}%")
+    print(f"  extra_tool_calls        {agg['extra_calls']}")
     print(f"  mean_latency_ms         {agg['mean_latency_ms']:.0f}")
     print(f"  projected_cost_usd      ${agg['projected_total_cost_usd']:.4f}")

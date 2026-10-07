@@ -73,3 +73,24 @@ def test_both_orchestrators_pass_the_whole_suite(framework, tmp_path):
     out = tmp_path / "r.md"
     assert cli.main(["--framework", framework, "--out", str(out)]) == 0
     assert f"orchestrator: `{framework}`" in out.read_text()
+
+
+def test_tool_selection_is_in_order_with_extras_counted_separately():
+    from evals import metrics
+
+    want = ["search_series", "get_series_observations"]
+    assert metrics.in_order(want, ["search_series", "get_series_metadata",
+                                   "get_series_observations"])
+    assert not metrics.in_order(want, ["get_series_observations", "search_series"])
+    assert not metrics.in_order(want, ["search_series"])
+    assert metrics.extra_calls(want, ["search_series"] * 4 + ["get_series_observations"]) == 3
+
+
+@pytest.mark.parametrize("framework", ["adk", "native"])
+def test_the_stub_makes_no_extra_calls(framework, monkeypatch):
+    """Tool selection now tolerates extra calls (a live model's metadata
+    lookup), so the offline fence on exact sequences lives here instead."""
+    monkeypatch.setenv("AGENT_FRAMEWORK", framework)
+    suite = runner.run_suite()
+    assert [(r.id, r.leaf_tools) for r in suite.results if r.extra_calls] == []
+    assert all(r.passed for r in suite.results)

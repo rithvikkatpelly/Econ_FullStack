@@ -43,6 +43,14 @@ class CaseResult:
     error: str | None = None
 
     @property
+    def extra_calls(self) -> int:
+        return metrics.extra_calls(self.expected_leaf_tools, self.leaf_tools)
+
+    @property
+    def failed_checks(self) -> list[str]:
+        return [m for m, v in self.scores.items() if v is not None and v < 1.0]
+
+    @property
     def passed(self) -> bool:
         if self.error:
             return False

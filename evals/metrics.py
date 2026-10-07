@@ -4,8 +4,11 @@ to this case" and is dropped from the aggregate.
 
 Metrics
 -------
-tool_selection      Did the Economic Data Agent make exactly the expected
-                    ordered leaf-tool sequence?
+tool_selection      Did the Economic Data Agent make the expected leaf-tool
+                    calls, in order? Extra calls in between are allowed here
+                    and counted separately (`extra_calls`, reported, not
+                    graded): a metadata lookup before a fetch is defensible,
+                    a 10-call loop is not, and the report shows which is which.
 series_grounding    F1 of the FRED series actually fetched vs. the expected set.
 argument_validity   Did every data call carry a well-formed, bounded date range
                     and a valid series ID? (re-runs the real validators)
@@ -62,6 +65,17 @@ def _args_valid(call) -> bool:
     return False
 
 
+def in_order(expected: list[str], actual: list[str]) -> bool:
+    """Whether `expected` occurs in `actual` in order (gaps allowed)."""
+    rest = iter(actual)
+    return all(any(a == e for a in rest) for e in expected)
+
+
+def extra_calls(expected: list[str], actual: list[str]) -> int:
+    """Leaf-tool calls beyond the expected ones."""
+    return max(0, len(actual) - len(expected))
+
+
 def score_case(case: dict, trace) -> dict[str, float | None]:
     data_calls = trace.leaf_calls("economic_data_agent")
     actual_tools = [c.name for c in data_calls]
@@ -78,7 +92,7 @@ def score_case(case: dict, trace) -> dict[str, float | None]:
     all_data_calls = [c for c in trace.tool_calls if c.name in trace.LEAF_TOOLS]
 
     scores: dict[str, float | None] = {
-        "tool_selection": 1.0 if actual_tools == expected_tools else 0.0,
+        "tool_selection": 1.0 if in_order(expected_tools, actual_tools) else 0.0,
         "series_grounding": _f1(expected_series, actual_series),
         "argument_validity": (
             1.0 if all_data_calls and all(_args_valid(c) for c in all_data_calls) else 0.0
