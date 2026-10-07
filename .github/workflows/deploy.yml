@@ -88,6 +88,9 @@ jobs:
           fi
           SA_FLAG=()
           if [ -n "$API_SERVICE_ACCOUNT" ]; then SA_FLAG=(--service-account="$API_SERVICE_ACCOUNT"); fi
+          # Startup probe: up to 2 min (24 x 5 s). The first deploy failed at
+          # the old 9 s window: a cold instance spends ~5 s just starting
+          # Python, after the image loads. --cpu-boost shortens that.
           gcloud run deploy "$BACKEND_SERVICE" \
             "${SA_FLAG[@]}" \
             --image="$BACKEND_IMAGE" \
@@ -98,7 +101,8 @@ jobs:
             --min-instances=0 \
             --max-instances=3 \
             --port=8080 \
-            --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=3,failureThreshold=3 \
+            --cpu-boost \
+            --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=24 \
             --timeout=300 \
             --set-env-vars="FRED_OFFLINE=0,SESSION_TOKEN_BUDGET=50000,${AGENT_ENV}" \
             --set-secrets="$SECRETS"
