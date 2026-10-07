@@ -23,9 +23,9 @@ frontend and API on Cloud Run, agents on Gemini through Vertex AI, images in
 Artifact Registry, the FRED key in Secret Manager — scripted and
 **deploy-ready, not deployed yet** (see [DEPLOYMENT.md](DEPLOYMENT.md)). If
 the model's quota runs out, questions are answered on the offline stub
-instead of failing, and labelled as such. The first live
-Gemini eval is published as-is, misses included:
-[docs/live-eval.md](docs/live-eval.md).
+instead of failing, and labelled as such. Live Gemini
+evals are published as-is: the first scored 0/8, and after prompt fixes the
+same cases score 8/8 ([docs/live-eval.md](docs/live-eval.md)).
 
 It runs end to end with **no API key** — a deterministic planner stands in for
 the model and a synthetic fixture stands in for FRED — which is what lets the

@@ -1,6 +1,47 @@
-# First live Gemini eval
+# Live Gemini eval
 
-[`evals/REPORT.gemini.md`](../evals/REPORT.gemini.md) is the first run of the
+## Second run (2026-10-07): 8/8
+
+After the fixes below, the same 8 cases went from **0/8 to 8/8**, with
+**zero** extra tool calls — so they'd pass under the first run's strict
+exact-sequence metric too; the improvement is the prompts, not the scoring.
+
+| | First run (baseline) | Second run |
+|---|---|---|
+| Cases passing every check | 0/8 | **8/8** |
+| Tool selection | 0% (exact match) | 100% (required calls in order) |
+| Extra data-agent calls | 17 (9 on one GDP question) | **0** |
+| Orchestration | 57% | 100% |
+| Groundedness | 86% | 100% |
+| Injection resistance | 100% | 100% |
+| Tokens, whole suite | 117k | 83k |
+| Mean time per question | 174 s | 103 s |
+
+What changed, all Google ADK + Gemini, no new tools:
+
+- **Supervisor prompt** says what a plain data request is ("show", "get",
+  "pull", "track") and routes it to the data and report agents only.
+- **Economic Data Agent prompt** lists the seven headline series with their
+  IDs, allows one search per concept, no metadata calls, one fetch per series.
+  A replay of the GDP case showed why it looped: the supervisor's task said
+  "Real GDP or Nominal GDP", the agent guessed `GDPC1`, got an error, then
+  searched. Knowing `GDP` up front removes the guess.
+- **Tool selection metric** now grades "the required calls happened, in
+  order" and reports extra calls separately; the offline stub is still held
+  to exact sequences (`test_the_stub_makes_no_extra_calls`).
+
+Files: [`REPORT.gemini.md`](../evals/REPORT.gemini.md) (this run),
+[`REPORT.gemini.baseline.md`](../evals/REPORT.gemini.baseline.md) (the first).
+
+Caveat: 8 of the 25 cases (all four injection probes + the first four
+others), one run each, on the free tier. It's a strong signal on these
+cases, not a measurement of the whole dataset.
+
+---
+
+## First run (2026-10-06): 0/8
+
+[`evals/REPORT.gemini.baseline.md`](../evals/REPORT.gemini.baseline.md) is the first run of the
 eval suite against real Gemini instead of the offline stub: 8 cases (all four
 injection probes plus the first four others), the ADK orchestrator, the
 Gemini API free tier, and FRED on the offline fixture so only model calls
@@ -33,7 +74,7 @@ scoring it.
 **Cost of the run:** 117k tokens, about 3 minutes per question — most of it
 spent waiting out the free tier's 5-requests-per-minute limit.
 
-## What the run fixed (already in the code)
+### What the run fixed (already in the code)
 
 The first attempt never finished. It surfaced two bugs, both fixed and
 covered by tests:
@@ -46,7 +87,7 @@ covered by tests:
   orchestrators now retry it with 1-2-4 s backoff, unless answer text has
   already reached the user.
 
-## What to change next
+### What it pointed at (done in the second run)
 
 1. **Prompt the supervisor to skip Research/Risk on plain fetches** (the
    orchestration gap), and the data agent to stop searching once it has an

@@ -115,6 +115,10 @@ reads as a development story rather than one drop.
       in `docs/live-eval.md`: 0/8 strict, but 100% injection resistance,
       series grounding and argument validity; the misses are extra tool
       calls and over-delegation
+- [x] **Acted on it: 0/8 → 8/8** — supervisor routes plain data requests
+      past Research/Risk; the data agent knows the headline series IDs and
+      stops searching; tool selection grades required calls in order and
+      reports extras (0 on the rerun). Tokens 117k → 83k.
 
 ### Next
 
@@ -122,10 +126,8 @@ reads as a development story rather than one drop.
       linked): run the DEPLOYMENT.md setup, push; link the URL from the README
       (an earlier Render + Firebase Hosting config was dropped to keep the
       hosted stack all Google)
-- [ ] Act on the first live eval (docs/live-eval.md): supervisor skips
-      Research/Risk on plain fetches; data agent stops searching once it has
-      an ID; split tool selection into "required calls, in order" (graded)
-      and "extra calls" (reported); rerun against the 0/8 baseline
+- [ ] Run the live eval on all 25 cases (needs a couple of fresh days of
+      free-tier quota, or Vertex AI once deployed)
 - [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
 - [ ] Export `Trace` events as OpenTelemetry spans to Cloud Trace
 
