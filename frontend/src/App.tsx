@@ -21,8 +21,8 @@ export default function App() {
   const { items, loading } = useSnapshots();
 
   useEffect(() => {
-    // The public demo's API sleeps when idle and takes up to a minute to wake;
-    // say so instead of looking broken.
+    // The API scales to zero when idle (Cloud Run --min-instances=0); the first
+    // request after that waits for a cold start. Say so instead of looking broken.
     const timer = setTimeout(() => setSlowStart(true), 3000);
     fetch(`${API_BASE_URL}/health`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
@@ -50,8 +50,8 @@ export default function App() {
       )}
       {api.status === "checking" && slowStart && (
         <div className="banner" role="status">
-          <strong>Waking the server</strong> — the free demo API sleeps when nobody's using it. This takes up to a
-          minute, once.
+          <strong>Waking the server</strong> — the API scales to zero when nobody's using it. This takes a few
+          seconds, once.
         </div>
       )}
       {api.status === "down" && (

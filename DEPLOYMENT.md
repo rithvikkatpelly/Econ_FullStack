@@ -4,91 +4,7 @@ The repo has three runnable surfaces. Only the **HTTP API + frontend** are
 meant to be *hosted*; the MCP server runs on the user's own machine next to
 Claude Desktop, and the Streamlit page is a local demo.
 
-## Free public demo (no billing)
-
-A public demo that costs nothing and needs no credit card: the API on
-**Render's free plan**, the frontend on **Firebase Hosting** (Spark plan),
-the agents on the **Gemini API free tier**.
-
-```
-Firebase Hosting (static React) ──HTTP/SSE──▶ Render free web service (backend/Dockerfile)
-                                                 ├─▶ FRED API
-                                                 └─▶ Gemini API (free tier) ─┐ quota gone?
-                                                     offline stub ◀──────────┘ answer here, labelled
-```
-
-**Limits to know about:**
-
-- **Gemini free tier:** ~20 requests/day per model and one question is ~10
-  requests, so roughly two live answers a day (more with the fallback models,
-  each of which has its own quota). After that the API answers on the offline
-  stub (`AGENT_STUB_FALLBACK`, on by default): same agents, same real FRED
-  calls, a rule-based planner instead of the model. The UI says so on the
-  answer, and the API stops trying Gemini until the quota resets (Google's
-  `retryDelay`, else midnight Pacific, when Gemini API daily quotas reset).
-- **Render free plan:** sleeps after 15 idle minutes; the first visit after
-  that waits ~1 minute (the page shows "Waking the server"). 512 MB RAM — the
-  API peaks around 150 MB on a run — and one agent run at a time
-  (`render.yaml`).
-
-**What's committed:** `render.yaml` (Blueprint: Docker build, `/health`
-check, env vars, tight agent rate limits), `firebase.json` (serve
-`frontend/dist`, cache hashed assets forever and `index.html` never),
-`.github/workflows/demo.yml` (build with the API URL baked in, publish to
-Firebase; skipped until configured).
-
-### 1. API on Render (~5 min)
-
-1. Sign up at https://render.com with GitHub (no card needed for the free plan).
-2. **New → Blueprint**, pick the `Econ_FullStack` repo. Render reads
-   `render.yaml` and asks for three values:
-   - `GEMINI_API_KEY` — https://aistudio.google.com/apikey
-   - `FRED_API_KEY` — https://fred.stlouisfed.org/docs/api/api_key.html
-   - `CORS_ALLOWED_ORIGINS` — put `https://YOUR_FIREBASE_PROJECT.web.app`
-     (you'll know it after step 2; you can edit it then).
-3. Deploy. Check `https://econ-data-api-XXXX.onrender.com/health`:
-   `fred_api_key_configured: true`, `agent_backend: "gemini"`,
-   `agent_model_configured: true`.
-
-From then on every push to `main` redeploys the API.
-
-### 2. Frontend on Firebase Hosting (~10 min)
-
-```bash
-npm install -g firebase-tools
-firebase login
-firebase projects:create econ-data-demo-XXXX   # any globally unique id
-firebase init hosting:github                   # in the repo root
-```
-
-`firebase init hosting:github` creates a service account and stores it as the
-`FIREBASE_SERVICE_ACCOUNT_...` secret in the GitHub repo. When it asks to
-overwrite `firebase.json` or write workflow files, say **no** — this repo
-already has both. Then in GitHub → Settings → Secrets and variables → Actions:
-
-| Kind | Name | Value |
-|---|---|---|
-| Secret | `FIREBASE_SERVICE_ACCOUNT` | the service-account JSON (rename the secret the CLI made, or paste the key) |
-| Variable | `FIREBASE_PROJECT_ID` | `econ-data-demo-XXXX` |
-| Variable | `DEMO_API_URL` | `https://econ-data-api-XXXX.onrender.com` (no trailing slash) |
-
-Run **Actions → Deploy demo frontend → Run workflow** (afterwards it runs on
-every push that touches `frontend/`). The site is at
-`https://econ-data-demo-XXXX.web.app`; make sure that exact origin is in
-Render's `CORS_ALLOWED_ORIGINS`.
-
-### 3. Check it
-
-Ask a question on the site. The answer's footer shows `adk · gemini`. Once
-the day's quota is gone it shows `adk · stub` with the quota notice, and
-`/health` reports `agent_answering_on: "stub"` until the reset. (An invalid
-key won't trigger this: that's an auth error and fails the question by
-design.) The fallback is covered end to end in `tests/test_agent_api.py`
-(`test_real_daily_quota_error_on_adk_falls_back_to_the_stub`).
-
----
-
-## Cloud Run + Vertex AI (needs billing)
+## Cloud Run + Vertex AI
 
 ```
 frontend/ (Cloud Run, nginx) ──HTTP/SSE──▶ backend/app (Cloud Run, FastAPI) ──▶ FRED API
@@ -110,13 +26,16 @@ Vertex AI, authenticated as the Cloud Run service account (no model key).
   `backend/core/config.py`) — already wired, just needs the deployed
   frontend's URL.
 - `GET /health` — reports `status`, whether `FRED_API_KEY` actually resolved
-  (`fred_api_key_configured`, never the value itself), `offline`, and which
-  model drives the agents (`agent_backend`, `agent_model_configured`). No
-  database in this project, so there's nothing else to check.
+  (`fred_api_key_configured`, never the value itself), `offline`, which
+  model drives the agents (`agent_backend`, `agent_model_configured`), and
+  which one the next question will actually run on (`agent_answering_on`).
+  No database in this project, so there's nothing else to check.
 - `POST /agent/ask`, `POST /agent/stream` (`backend/app/agent.py`) — the
   supervisor + specialist agents over HTTP, the second streamed as
   server-sent events for the UI's activity timeline. Per-client rate limit,
-  a concurrent-run cap, and a query length limit are built in.
+  a concurrent-run cap, and a query length limit are built in. If Gemini's
+  quota runs out, the question is answered on the offline stub instead of
+  failing, labelled as such in the UI (`AGENT_STUB_FALLBACK`, on by default).
 - Structured JSON logging (`backend/app/main.py`) — one line per request
   (method, path, status, latency) to stdout, which Cloud Run ships to Cloud
   Logging automatically; no sidecar or extra config needed on this end.
@@ -126,9 +45,11 @@ Vertex AI, authenticated as the Cloud Run service account (no model key).
   can't actually serve never receives traffic).
 
 **What this document covers:** the one-time GCP setup that workflow depends
-on. After it's done once, deploying is just `git push`. Nothing in this
-document has been run — no GCP project exists for this repo yet. The exact
-commands below are what to run to bring one up.
+on. After it's done once, deploying is just `git push`. The project
+(`econ-data-agent`) exists but nothing below has been run yet: billing has
+to be linked first, since Cloud Run, Artifact Registry and Vertex AI all
+require it (at this traffic, the free tiers should keep the bill near $0;
+step 10 sets a budget alert so you'd hear about it if not).
 
 ---
 
@@ -444,6 +365,21 @@ roughly 5–7 Gemini Flash requests per case.
 - Both services deploy with `--min-instances=0` (scale to zero) — no charge
   while idle, at the cost of a cold start (a few seconds) on the first
   request after idle.
+- Set a budget alert so a surprise shows up as an email, not a bill (Cloud
+  Billing budgets email the billing admins at 50/90/100% by default):
+
+```bash
+gcloud billing budgets create \
+  --billing-account="$(gcloud billing projects describe "$PROJECT_ID" --format='value(billingAccountName)' | sed 's|billingAccounts/||')" \
+  --display-name="econ-data-agent" \
+  --budget-amount=5USD \
+  --filter-projects="projects/$PROJECT_ID" \
+  --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+```
+
+- The agents' own spend guards apply on top: per-client rate limit, at most
+  `AGENT_MAX_CONCURRENT_RUNS` runs at once, `--max-instances=3`, and a
+  per-question token budget.
 - To tear everything down and stop all billing:
 
 ```bash

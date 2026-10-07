@@ -18,11 +18,12 @@ Google's **Agent Development Kit (ADK)** and runs on **Gemini**, behind a
 FastAPI back end that streams its progress to a React front end as a live
 activity timeline — see [Two orchestrators](#two-orchestrators-adk-and-native)
 and [Ask the agent](#ask-the-agent-gemini-full-stack). It has run end to end
-on live Gemini through the Gemini API. A **billing-free public demo** is
-configured (API on Render's free plan, frontend on Firebase Hosting, Gemini
-free tier with an automatic, labelled fallback to the offline stub when the
-day's quota runs out), and the Cloud Run + Vertex AI deployment is scripted;
-neither is live yet (see [DEPLOYMENT.md](DEPLOYMENT.md)). The first live
+on live Gemini through the Gemini API. The deployment is all Google too —
+frontend and API on Cloud Run, agents on Gemini through Vertex AI, images in
+Artifact Registry, the FRED key in Secret Manager — scripted and
+**deploy-ready, not deployed yet** (see [DEPLOYMENT.md](DEPLOYMENT.md)). If
+the model's quota runs out, questions are answered on the offline stub
+instead of failing, and labelled as such. The first live
 Gemini eval is published as-is, misses included:
 [docs/live-eval.md](docs/live-eval.md).
 
@@ -926,18 +927,7 @@ hours, because the API's token budget is shared per process.
 
 ## Deployment
 
-**Free public demo (no billing).** `render.yaml` runs the API on Render's
-free plan straight from `backend/Dockerfile`; `.github/workflows/demo.yml`
-builds the frontend against it and publishes to Firebase Hosting (Spark
-plan). The agents use the Gemini API free tier, about two questions a day
-before the quota runs out. When it does, the API answers on the offline stub
-instead of failing: the timeline shows `Gemini is out of quota — starting
-over on offline stub`, the answer carries a notice and `degraded:
-"model_quota_exhausted"`, and later questions skip Gemini until the quota
-resets (Google's `retryDelay`, else midnight Pacific). `GET /health` reports
-it as `agent_answering_on`. Setup: [DEPLOYMENT.md](DEPLOYMENT.md#free-public-demo-no-billing).
-
-**Cloud Run.** `backend/` and `frontend/` each have a `Dockerfile` (repo root as the
+`backend/` and `frontend/` each have a `Dockerfile` (repo root as the
 backend's build context, since the image needs both `src/` and `backend/`),
 and `.github/workflows/deploy.yml` builds both, pushes them to Artifact
 Registry, and deploys both to **Google Cloud Run** on every push to `main` —

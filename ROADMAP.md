@@ -92,9 +92,7 @@ reads as a development story rather than one drop.
       signatures (verified live); a failover now re-signs only the turns the
       new model didn't produce with `skip_thought_signature_validator`
 
-- [x] **Billing-free public demo, configured** — `render.yaml` (API on
-      Render's free plan), `firebase.json` + `demo.yml` (frontend on Firebase
-      Hosting), Gemini API free tier. A used-up quota no longer fails the
+- [x] **Stub fallback for a used-up quota** — a used-up quota no longer fails the
       question: the API reruns it on the offline stub (per-run
       `backend_override`, a ContextVar), labels it (`degraded`, a UI notice,
       a `restart` fallback event that clears the half-streamed answer) and
@@ -120,8 +118,10 @@ reads as a development story rather than one drop.
 
 ### Next
 
-- [ ] Go live: create the Render service and Firebase project
-      (DEPLOYMENT.md, "Free public demo") and link the URL from the README
+- [ ] Go live on Cloud Run: link billing to `econ-data-agent`, run the
+      DEPLOYMENT.md setup, push; link the URL from the README
+      (an earlier Render + Firebase Hosting config was dropped to keep the
+      hosted stack all Google)
 - [ ] Act on the first live eval (docs/live-eval.md): supervisor skips
       Research/Risk on plain fetches; data agent stops searching once it has
       an ID; split tool selection into "required calls, in order" (graded)
