@@ -28,6 +28,10 @@ env:
   GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
   GEMINI_API_KEY_SECRET: ${{ vars.GEMINI_API_KEY_SECRET }}
   VERTEX_LOCATION: ${{ vars.VERTEX_LOCATION }}
+  # Dedicated runtime identities (DEPLOYMENT.md step 5). Unset → Cloud Run's
+  # default (the Compute Engine default service account).
+  API_SERVICE_ACCOUNT: ${{ vars.API_SERVICE_ACCOUNT }}
+  FRONTEND_SERVICE_ACCOUNT: ${{ vars.FRONTEND_SERVICE_ACCOUNT }}
 
 permissions:
   contents: read
@@ -82,7 +86,10 @@ jobs:
           else
             AGENT_ENV="${AGENT_ENV},GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION:-global}"
           fi
+          SA_FLAG=()
+          if [ -n "$API_SERVICE_ACCOUNT" ]; then SA_FLAG=(--service-account="$API_SERVICE_ACCOUNT"); fi
           gcloud run deploy "$BACKEND_SERVICE" \
+            "${SA_FLAG[@]}" \
             --image="$BACKEND_IMAGE" \
             --region="$REGION" \
             --allow-unauthenticated \
@@ -117,7 +124,10 @@ jobs:
 
       - name: Deploy frontend to Cloud Run
         run: |
+          SA_FLAG=()
+          if [ -n "$FRONTEND_SERVICE_ACCOUNT" ]; then SA_FLAG=(--service-account="$FRONTEND_SERVICE_ACCOUNT"); fi
           gcloud run deploy "$FRONTEND_SERVICE" \
+            "${SA_FLAG[@]}" \
             --image="$FRONTEND_IMAGE" \
             --region="$REGION" \
             --allow-unauthenticated \

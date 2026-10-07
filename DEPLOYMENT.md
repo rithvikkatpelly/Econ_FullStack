@@ -45,8 +45,8 @@ Vertex AI, authenticated as the Cloud Run service account (no model key).
   can't actually serve never receives traffic).
 
 **What this document covers:** the one-time GCP setup that workflow depends
-on. After it's done once, deploying is just `git push`. The project is
-`econ-fullstack-510918` (billing linked; Cloud Run, Artifact Registry and
+on. After it's done once, deploying is just `git push`. **All of it has
+been run** (2026-10-07) on `econ-fullstack-510918` (billing linked; Cloud Run, Artifact Registry and
 Vertex AI all require it — at this traffic the free tiers should keep the
 bill near $0, and step 10 sets a budget alert in case not). Its
 organization's policies allow public Cloud Run services and Workload
@@ -107,6 +107,24 @@ gcloud artifacts repositories create econ-data \
   --description="Econ Data API + frontend images"
 ```
 
+Every deploy pushes two new images, so add a cleanup policy (keep the 5
+newest per image and the build cache, delete the rest after 7 days) to stay
+inside the 0.5 GB free storage:
+
+```bash
+cat > ar-cleanup.json <<'JSON'
+[
+  {"name": "keep-5-newest", "action": {"type": "Keep"}, "mostRecentVersions": {"keepCount": 5}},
+  {"name": "keep-build-cache", "action": {"type": "Keep"},
+   "condition": {"tagState": "TAGGED", "tagPrefixes": ["buildcache"]}},
+  {"name": "delete-older-than-7d", "action": {"type": "Delete"},
+   "condition": {"tagState": "ANY", "olderThan": "7d"}}
+]
+JSON
+gcloud artifacts repositories set-cleanup-policies econ-data \
+  --location="$REGION" --policy=ar-cleanup.json --no-dry-run
+```
+
 ---
 
 ## 4. Store the FRED API key in Secret Manager
@@ -164,26 +182,31 @@ do
 done
 ```
 
-The **runtime** service account (the identity the deployed container itself
-runs as — the default Compute Engine SA, not the deployer above) separately
-needs permission to read the secret:
+The containers run as their own **runtime** service accounts, not the
+Compute Engine default (which doesn't exist on a new project until Compute
+Engine is enabled, and is broader than needed). The API's can read the
+FRED secret and call Gemini on Vertex AI; the frontend's has no permissions.
+The deployer may act as these two and nothing else:
 
 ```bash
-PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
-RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+gcloud iam service-accounts create econ-api-runtime --display-name="Econ API (Cloud Run runtime)"
+gcloud iam service-accounts create econ-frontend-runtime --display-name="Econ frontend (no permissions)"
+API_SA="econ-api-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+FE_SA="econ-frontend-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
 
+for SA in "$API_SA" "$FE_SA"; do
+  gcloud iam service-accounts add-iam-policy-binding "$SA" \
+    --member="serviceAccount:${SA_EMAIL}" --role=roles/iam.serviceAccountUser
+done
 gcloud secrets add-iam-policy-binding fred-api-key \
-  --member="serviceAccount:${RUNTIME_SA}" \
-  --role="roles/secretmanager.secretAccessor"
-```
-
-…and permission to call Gemini on Vertex AI:
-
-```bash
+  --member="serviceAccount:${API_SA}" --role=roles/secretmanager.secretAccessor
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:${RUNTIME_SA}" \
-  --role="roles/aiplatform.user"
+  --member="serviceAccount:${API_SA}" --role=roles/aiplatform.user
 ```
+
+(The deployer loop above then only needs `roles/run.admin` and
+`roles/artifactregistry.writer`; `roles/iam.serviceAccountUser` is granted
+per runtime account here instead of project-wide.)
 
 (Easy to miss: `roles/run.admin` on the *deployer* only lets it deploy
 revisions — it does not let the *running container* read the secret or call
@@ -248,6 +271,8 @@ gcloud iam workload-identity-pools providers describe "github-provider" \
 | `BACKEND_SERVICE` | `econ-data-api` |
 | `FRONTEND_SERVICE` | `econ-data-frontend` |
 | `FRED_API_KEY_SECRET` | `fred-api-key` |
+| `API_SERVICE_ACCOUNT` | `econ-api-runtime@YOUR_PROJECT_ID.iam.gserviceaccount.com` |
+| `FRONTEND_SERVICE_ACCOUNT` | `econ-frontend-runtime@YOUR_PROJECT_ID.iam.gserviceaccount.com` |
 
 Optional:
 
