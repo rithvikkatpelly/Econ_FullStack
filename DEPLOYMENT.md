@@ -45,11 +45,12 @@ Vertex AI, authenticated as the Cloud Run service account (no model key).
   can't actually serve never receives traffic).
 
 **What this document covers:** the one-time GCP setup that workflow depends
-on. After it's done once, deploying is just `git push`. The project
-(`econ-data-agent`) exists but nothing below has been run yet: billing has
-to be linked first, since Cloud Run, Artifact Registry and Vertex AI all
-require it (at this traffic, the free tiers should keep the bill near $0;
-step 10 sets a budget alert so you'd hear about it if not).
+on. After it's done once, deploying is just `git push`. The project is
+`econ-fullstack-510918` (billing linked; Cloud Run, Artifact Registry and
+Vertex AI all require it — at this traffic the free tiers should keep the
+bill near $0, and step 10 sets a budget alert in case not). Its
+organization's policies allow public Cloud Run services and Workload
+Identity Federation, both of which this setup needs.
 
 ---
 

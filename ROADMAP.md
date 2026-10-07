@@ -118,8 +118,8 @@ reads as a development story rather than one drop.
 
 ### Next
 
-- [ ] Go live on Cloud Run: link billing to `econ-data-agent`, run the
-      DEPLOYMENT.md setup, push; link the URL from the README
+- [ ] Go live on Cloud Run (project `econ-fullstack-510918`, billing
+      linked): run the DEPLOYMENT.md setup, push; link the URL from the README
       (an earlier Render + Firebase Hosting config was dropped to keep the
       hosted stack all Google)
 - [ ] Act on the first live eval (docs/live-eval.md): supervisor skips
