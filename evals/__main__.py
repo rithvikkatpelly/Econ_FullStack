@@ -5,8 +5,8 @@
     AGENT_BACKEND=gemini python -m evals \
         --max-cases 8 --min-pass-rate 0.75 --out evals/REPORT.live.md   # live, capped
 
-`--max-cases` is the spend cap for a paid run (injection probes are always
-kept). `--min-pass-rate` is the gate: a live model won't be perfect, so the
+`--max-cases` is the spend cap for a paid run (injection probes come first,
+up to half the cap). `--min-pass-rate` is the gate: a live model won't be perfect, so the
 live job fails on a drop below the threshold rather than on any single miss.
 The stub keeps the default of 1.0 — any regression fails CI.
 """

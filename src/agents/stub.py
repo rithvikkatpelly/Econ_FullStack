@@ -31,7 +31,7 @@ MAX_COMPARE = 4
 
 _ANALYSIS_HINTS = (
     "analy", "assess", "risk", "recession", "explain", "why", "outlook",
-    "trend", "relationship", "changed", "compare", "impact", "signal",
+    "trend", "relationship", "compare", "impact", "signal",
 )
 
 
@@ -143,7 +143,10 @@ def _tool(role: str, messages: list[dict], name: str, tool_input: dict) -> Model
 
 
 def _is_analytical(text: str) -> bool:
-    return any(h in text.lower() for h in _ANALYSIS_HINTS)
+    # "How has X changed" is a data request (as the supervisor prompt says);
+    # an event used as a date ("since the Great Recession") isn't a question
+    # about recessions.
+    return any(h in dates.without_events(text) for h in _ANALYSIS_HINTS)
 
 
 def _period_phrase(text: str) -> str | None:

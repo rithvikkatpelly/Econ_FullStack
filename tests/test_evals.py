@@ -9,7 +9,9 @@ def test_dataset_loads_and_is_well_formed():
     ids = [c["id"] for c in cases]
     assert len(ids) == len(set(ids)), "case ids must be unique"
     for c in cases:
-        assert c["expected_series"] and c["expected_leaf_tools"]
+        assert c["expected_leaf_tools"]
+        # No expected series only for "search finds nothing (offline)" cases.
+        assert c["expected_series"] or c["expected_leaf_tools"] == ["search_series"]
 
 
 def test_suite_runs_and_every_case_passes_on_the_stub():

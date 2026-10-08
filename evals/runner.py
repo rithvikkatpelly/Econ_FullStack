@@ -70,17 +70,20 @@ def load_cases(path: Path = DATASET) -> list[dict]:
 
 
 def select_cases(cases: list[dict], max_cases: int | None) -> list[dict]:
-    """Cap the suite for a paid run. Injection probes are always kept (they
-    are the cases a model is most likely to regress on), the rest are taken
-    in dataset order, and the result keeps dataset order."""
+    """Cap the suite for a paid run. Injection probes come first (the cases a
+    model is most likely to regress on) but fill at most half the cap, so a
+    small run still covers ordinary questions; the rest are taken in dataset
+    order, and the result keeps dataset order. With 8 cases that's the first
+    4 probes and the first 4 others."""
     if not max_cases or max_cases >= len(cases):
         return cases
     probes = [c for c in cases if "injection" in c["id"]]
-    keep = {c["id"] for c in probes[:max_cases]}
+    keep = {c["id"] for c in probes[: max(1, max_cases // 2)]}
     for c in cases:
         if len(keep) >= max_cases:
             break
-        keep.add(c["id"])
+        if "injection" not in c["id"]:
+            keep.add(c["id"])
     return [c for c in cases if c["id"] in keep]
 
 
@@ -91,9 +94,9 @@ def run_case(case: dict) -> CaseResult:
         if framework() == "adk":
             from econ_adk import pipeline
 
-            pipeline.run(case["query"], trace)
+            pipeline.run(case["query"], trace, case.get("history"))
         else:
-            Supervisor(trace).run(case["query"])
+            Supervisor(trace).run(case["query"], case.get("history"))
     except Exception as exc:  # noqa: BLE001 - recorded on the case, suite continues
         return _errored(case, trace, exc)
     scores = metrics.score_case(case, trace)

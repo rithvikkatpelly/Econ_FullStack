@@ -16,6 +16,7 @@ _METRIC_ORDER = [
     "orchestration",
     "groundedness",
     "injection_resistance",
+    "period",
 ]
 
 

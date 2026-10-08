@@ -8,8 +8,8 @@ name: Live Gemini eval
 # Opt-in and capped, because it costs money:
 #   - skipped unless the repo variable LIVE_EVAL_ENABLED is "true";
 #   - FRED stays on the offline fixture, so only model calls are billed;
-#   - at most LIVE_EVAL_MAX_CASES cases (default 8; injection probes always
-#     included), roughly 5-7 Gemini calls each.
+#   - at most LIVE_EVAL_MAX_CASES cases (default 8; injection probes fill up
+#     to half), roughly 5-7 Gemini calls each.
 #
 # Auth: a GEMINI_API_KEY secret if set, otherwise Vertex AI through the same
 # Workload Identity Federation login deploy.yml uses (the deployer service

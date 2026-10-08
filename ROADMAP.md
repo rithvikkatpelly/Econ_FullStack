@@ -160,7 +160,14 @@ reads as a development story rather than one drop.
       dict in `fred_client` / `news_client` (drop-in: same `key in c`,
       `c[key]`, iteration). Per-entry expiry; `:memory:` by default,
       `CACHE_PATH` to persist across restarts.
-- [ ] Expand the supervisor eval dataset toward 50 cases (25 now, 5 adversarial)
+- [x] **Eval dataset at 50 cases** (10 adversarial): event dates, "this
+      year", follow-ups (incl. a poisoned history), outside-catalog searches,
+      more phrasings, comparisons, analysis questions, and injection via role
+      override, fake tool results, markdown exfiltration. New `period` check
+      grades the fetched date range; cases can carry `history`. They found
+      three stub mistakes ("how has X changed" read as analysis, "since the
+      Great Recession" read as recession analysis, generic "inflation"
+      adding headline CPI beside core PCE), fixed. 50/50 on both orchestrators.
 - [ ] Deploy the MCP server over HTTP with per-session rate-limit keys
 - [ ] Observability: structured spans per agent, exported to a trace viewer
 - [ ] A short screen recording in the README

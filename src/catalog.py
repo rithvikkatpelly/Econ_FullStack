@@ -120,6 +120,10 @@ CATALOG: dict[str, Series] = {
 IDS = frozenset(CATALOG)
 
 
+_PRICE_MEASURES = {"CPIAUCSL", "CPILFESL", "PCEPILFE"}
+_GENERIC_ALIASES = {"inflation"}
+
+
 def resolve(text: str) -> list[str]:
     """Concept phrases in ``text`` → series IDs, in the order they appear.
 
@@ -133,13 +137,20 @@ def resolve(text: str) -> list[str]:
         key=lambda p: len(p[0]),
         reverse=True,
     )
-    hits: list[tuple[int, str]] = []
+    hits: list[tuple[int, str, str]] = []
     for alias, sid in by_length:
         at = working.find(alias)
         if at != -1:
-            hits.append((at, sid))
+            hits.append((at, sid, alias))
             working = working.replace(alias, " ")
-    return list(dict.fromkeys(sid for _, sid in sorted(hits)))
+    # "inflation" alone means headline CPI, but not when the question already
+    # names a price measure ("what does core PCE say about the inflation
+    # outlook?" is about core PCE only).
+    named_prices = {sid for _, sid, alias in hits
+                    if sid in _PRICE_MEASURES and alias not in _GENERIC_ALIASES}
+    if named_prices:
+        hits = [h for h in hits if not (h[2] in _GENERIC_ALIASES and h[1] not in named_prices)]
+    return list(dict.fromkeys(sid for _, sid, _ in sorted(hits)))
 
 
 def search(text: str, limit: int = 5) -> list[str]:

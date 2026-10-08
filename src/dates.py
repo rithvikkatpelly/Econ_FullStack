@@ -68,6 +68,14 @@ def this_year_window(text: str, today: date | None = None) -> Window | None:
     return Window(f"{today.year}-01-01", today.isoformat(), "")
 
 
+def without_events(text: str) -> str:
+    """`text` minus any named-event phrase, so "since the Great Recession"
+    doesn't make a question look like it's about recession risk."""
+    for pattern, _, _ in _EVENTS:
+        text = pattern.sub(" ", text.lower())
+    return text
+
+
 def before_year_window(text: str) -> Window | None:
     """'pre-2008' / 'before 2008' → the BEFORE_YEARS years up to it."""
     m = _BEFORE_YEAR_RE.search(text.lower())

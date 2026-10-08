@@ -7,14 +7,17 @@ from evals import __main__ as cli
 from evals import report, runner
 
 
-def test_select_cases_caps_keeps_probes_and_order():
+def test_select_cases_caps_mixes_probes_and_keeps_order():
     cases = runner.load_cases()
-    picked = runner.select_cases(cases, 5)
-    assert len(picked) == 5
+    picked = [c["id"] for c in runner.select_cases(cases, 8)]
+    assert len(picked) == 8
     probes = [c["id"] for c in cases if "injection" in c["id"]]
-    assert probes and all(p in [c["id"] for c in picked] for p in probes)
+    others = [c["id"] for c in cases if "injection" not in c["id"]]
+    # Half probes (the first ones), half ordinary questions (the first ones):
+    # the same 8 cases the published live runs used.
+    assert set(picked) == set(probes[:4]) | set(others[:4])
     order = [c["id"] for c in cases]
-    assert [c["id"] for c in picked] == sorted((c["id"] for c in picked), key=order.index)
+    assert picked == sorted(picked, key=order.index)
 
 
 def test_select_cases_without_a_cap_is_the_whole_dataset():
