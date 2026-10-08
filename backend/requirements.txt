@@ -14,3 +14,6 @@ httpx>=0.27.0
 google-genai>=1.50.0
 # The default agent orchestrator (src/econ_adk): Google's Agent Development Kit.
 google-adk==2.11.0
+# Cloud Trace export for the agent runs (CLOUD_TRACE=1, backend/app/telemetry.py):
+# ADK's Google Cloud exporter sends OTLP over HTTP. Matches opentelemetry-sdk 1.42.
+opentelemetry-exporter-otlp-proto-http==1.42.1

@@ -33,3 +33,6 @@ ruff>=0.6.0
 # the agents, the evals, or the tests.
 streamlit>=1.30.0
 pandas>=2.0.0
+# Cloud Trace export for the agent runs (CLOUD_TRACE=1, backend/app/telemetry.py):
+# ADK's Google Cloud exporter sends OTLP over HTTP. Matches opentelemetry-sdk 1.42.
+opentelemetry-exporter-otlp-proto-http==1.42.1

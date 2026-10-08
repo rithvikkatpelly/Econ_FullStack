@@ -34,6 +34,8 @@ env:
   FRONTEND_SERVICE_ACCOUNT: ${{ vars.FRONTEND_SERVICE_ACCOUNT }}
   # Optional third service: the MCP server over HTTP (mcp.Dockerfile).
   MCP_SERVICE: ${{ vars.MCP_SERVICE }}
+  # "1" exports agent-run traces to Cloud Trace (backend/app/telemetry.py).
+  CLOUD_TRACE: ${{ vars.CLOUD_TRACE }}
   MCP_SERVICE_ACCOUNT: ${{ vars.MCP_SERVICE_ACCOUNT }}
 
 permissions:
@@ -107,7 +109,7 @@ jobs:
             --cpu-boost \
             --startup-probe=httpGet.path=/health,httpGet.port=8080,initialDelaySeconds=0,timeoutSeconds=3,periodSeconds=5,failureThreshold=24 \
             --timeout=300 \
-            --set-env-vars="FRED_OFFLINE=0,SESSION_TOKEN_BUDGET=50000,${AGENT_ENV}" \
+            --set-env-vars="FRED_OFFLINE=0,SESSION_TOKEN_BUDGET=50000,CLOUD_TRACE=${CLOUD_TRACE:-0},${AGENT_ENV}" \
             --set-secrets="$SECRETS"
 
       - name: Capture backend URL

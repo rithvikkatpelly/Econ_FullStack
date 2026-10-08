@@ -72,7 +72,10 @@ def test_live_report_says_what_it_measures():
 
 
 @pytest.mark.parametrize("framework", ["adk", "native"])
-def test_both_orchestrators_pass_the_whole_suite(framework, tmp_path):
+def test_both_orchestrators_pass_the_whole_suite(framework, tmp_path, monkeypatch):
+    # --framework sets AGENT_FRAMEWORK in the process environment; register it
+    # with monkeypatch so it's restored and can't leak into later tests.
+    monkeypatch.setenv("AGENT_FRAMEWORK", framework)
     out = tmp_path / "r.md"
     assert cli.main(["--framework", framework, "--out", str(out)]) == 0
     assert f"orchestrator: `{framework}`" in out.read_text()

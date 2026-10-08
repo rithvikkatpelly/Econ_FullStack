@@ -69,6 +69,7 @@ from agents import conversation
 from agents.model import QuotaExhausted, backend_override
 from agents.supervisor import framework, run_with_framework
 from agents.trace import Trace
+from app import telemetry
 from core.config import get_settings
 from rate_limit import RateLimiter
 
@@ -163,6 +164,16 @@ def _run_once(req: AskRequest, trace: Trace) -> dict:
 
 
 def _run(
+    req: AskRequest, listener: Callable[[dict], None] | None = None
+) -> tuple[Trace, dict]:
+    """`_answer`, inside the question's root trace span (app/telemetry.py)."""
+    with telemetry.question_span(framework(), bool(req.history)) as span:
+        trace, usage = _answer(req, listener)
+        telemetry.record_run(span, trace, usage)
+        return trace, usage
+
+
+def _answer(
     req: AskRequest, listener: Callable[[dict], None] | None = None
 ) -> tuple[Trace, dict]:
     """Answer one question. Returns the trace and a small dict for the

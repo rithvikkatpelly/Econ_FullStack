@@ -134,7 +134,12 @@ reads as a development story rather than one drop.
 - [ ] Run the live eval on all 25 cases (needs a couple of fresh days of
       free-tier quota, or Vertex AI once deployed)
 - [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
-- [ ] Export `Trace` events as OpenTelemetry spans to Cloud Trace
+- [x] **Cloud Trace** (`CLOUD_TRACE=1`, `backend/app/telemetry.py`): ADK's
+      own spans for each agent, model and tool call, exported through Google's
+      Telemetry API, under one root span per question with the run's shape
+      (framework, the backend that answered, stub fallback, tokens, series)
+      and an event per delegation and tool call. The question text isn't
+      recorded. Free tier: 2.5M spans/month.
 
 - [x] **`FetchRequest.search_text` acted on** — the pipeline's Data Agent
       runs `search_series` when the orchestrator only guessed the series:
@@ -178,5 +183,4 @@ reads as a development story rather than one drop.
       but new sessions can't reset it), verified with the MCP client over real
       HTTP. `mcp.Dockerfile` + an optional deploy step (one instance, session
       affinity). Cloud Run service pending a fresh `gcloud` login.
-- [ ] Observability: structured spans per agent, exported to a trace viewer
 - [ ] A short screen recording in the README

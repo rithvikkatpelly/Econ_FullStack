@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import fred_client
 import tools
-from app import agent
+from app import agent, telemetry
 from app.schemas import (
     CompareRequest,
     MetadataResponse,
@@ -66,6 +66,9 @@ if not logger.handlers:
     _handler = logging.StreamHandler(sys.stdout)
     _handler.setFormatter(_JSONFormatter())
     logger.addHandler(_handler)
+
+# Cloud Trace for the agent runs, when CLOUD_TRACE=1 (app/telemetry.py).
+telemetry.setup()
 
 app = FastAPI(
     title=settings.api_title,
