@@ -173,6 +173,10 @@ reads as a development story rather than one drop.
       three stub mistakes ("how has X changed" read as analysis, "since the
       Great Recession" read as recession analysis, generic "inflation"
       adding headline CPI beside core PCE), fixed. 50/50 on both orchestrators.
-- [ ] Deploy the MCP server over HTTP with per-session rate-limit keys
+- [x] **MCP server over HTTP** — `MCP_TRANSPORT=streamable-http` serves
+      `/mcp`; rate-limited per MCP session and per client address (4x looser,
+      but new sessions can't reset it), verified with the MCP client over real
+      HTTP. `mcp.Dockerfile` + an optional deploy step (one instance, session
+      affinity). Cloud Run service pending a fresh `gcloud` login.
 - [ ] Observability: structured spans per agent, exported to a trace viewer
 - [ ] A short screen recording in the README
