@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     agent_rate_limit_per_min: float = 6
     agent_rate_limit_burst: float = 3
     agent_max_concurrent_runs: int = 2
+    # Where the per-client agent rate limit lives: "memory" (per instance, the
+    # default) or "firestore" (shared by every instance, so N instances don't
+    # mean N times the limit; src/rate_limit_firestore.py).
+    rate_limit_backend: str = "memory"
     agent_max_query_chars: int = 500
     # Tool-data tokens one question may pull (cost_tracker.run_budget). Each
     # run gets its own, separate from SESSION_TOKEN_BUDGET, which the tool

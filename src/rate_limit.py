@@ -20,6 +20,20 @@ import time
 from dataclasses import dataclass
 
 
+def take(
+    tokens: float, updated: float, now: float, capacity: float, refill_per_sec: float
+) -> tuple[float, bool, float]:
+    """One token-bucket step: refill for the time since `updated`, then try to
+    spend one token. Returns (tokens left, allowed, retry_after_seconds). Pure,
+    so the in-memory and the Firestore limiter share it."""
+    tokens = min(capacity, tokens + max(0.0, now - updated) * refill_per_sec)
+    if tokens >= 1.0:
+        return tokens - 1.0, True, 0.0
+    if not refill_per_sec:
+        return tokens, False, float("inf")
+    return tokens, False, round((1.0 - tokens) / refill_per_sec, 3)
+
+
 @dataclass
 class _Bucket:
     tokens: float
@@ -40,23 +54,13 @@ class RateLimiter:
         """Returns (allowed, retry_after_seconds). retry_after is 0 when allowed."""
         now = self._clock()
         with self._lock:
-            b = self._buckets.get(key)
-            if b is None:
-                b = _Bucket(tokens=self.capacity, updated=now)
-                self._buckets[key] = b
-
-            elapsed = now - b.updated
-            b.tokens = min(self.capacity, b.tokens + elapsed * self.refill_per_sec)
+            b = self._buckets.get(key) or _Bucket(tokens=self.capacity, updated=now)
+            b.tokens, allowed, retry_after = take(
+                b.tokens, b.updated, now, self.capacity, self.refill_per_sec
+            )
             b.updated = now
-
-            if b.tokens >= 1.0:
-                b.tokens -= 1.0
-                return True, 0.0
-
-            deficit = 1.0 - b.tokens
-            if not self.refill_per_sec:
-                return False, float("inf")
-            return False, round(deficit / self.refill_per_sec, 3)
+            self._buckets[key] = b
+            return allowed, retry_after
 
     def reset(self) -> None:
         with self._lock:

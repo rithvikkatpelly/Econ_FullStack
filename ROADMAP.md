@@ -133,7 +133,11 @@ reads as a development story rather than one drop.
 
 - [ ] Run the live eval on all 25 cases (needs a couple of fresh days of
       free-tier quota, or Vertex AI once deployed)
-- [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
+- [x] **Rate limits shared across instances** — `RATE_LIMIT_BACKEND=firestore`
+      keeps each client's bucket in Firestore, updated in a transaction, so 3
+      instances don't mean 3x the limit. Firestore rather than Memorystore:
+      the free tier covers it, Memorystore has none. Falls back to the local
+      bucket if Firestore is down; client addresses stored only as hashes.
 - [x] **Cloud Trace** (`CLOUD_TRACE=1`, `backend/app/telemetry.py`): ADK's
       own spans for each agent, model and tool call, exported through Google's
       Telemetry API, under one root span per question with the run's shape

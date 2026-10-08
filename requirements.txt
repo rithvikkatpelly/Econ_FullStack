@@ -36,3 +36,6 @@ pandas>=2.0.0
 # Cloud Trace export for the agent runs (CLOUD_TRACE=1, backend/app/telemetry.py):
 # ADK's Google Cloud exporter sends OTLP over HTTP. Matches opentelemetry-sdk 1.42.
 opentelemetry-exporter-otlp-proto-http==1.42.1
+# Shared agent rate limit across instances (RATE_LIMIT_BACKEND=firestore,
+# src/rate_limit_firestore.py). Imported lazily; unused by default.
+google-cloud-firestore>=2.20.0

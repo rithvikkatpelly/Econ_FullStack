@@ -78,10 +78,17 @@ logger = logging.getLogger("econ_data_api")
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
-_limiter = RateLimiter(
-    capacity=settings.agent_rate_limit_burst,
-    refill_per_sec=settings.agent_rate_limit_per_min / 60.0,
-)
+def _make_limiter():
+    burst = settings.agent_rate_limit_burst
+    per_sec = settings.agent_rate_limit_per_min / 60.0
+    if settings.rate_limit_backend.strip().lower() == "firestore":
+        from rate_limit_firestore import FirestoreRateLimiter
+
+        return FirestoreRateLimiter(capacity=burst, refill_per_sec=per_sec)
+    return RateLimiter(capacity=burst, refill_per_sec=per_sec)
+
+
+_limiter = _make_limiter()
 _slots = threading.BoundedSemaphore(settings.agent_max_concurrent_runs)
 
 
