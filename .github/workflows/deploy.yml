@@ -32,6 +32,9 @@ env:
   # default (the Compute Engine default service account).
   API_SERVICE_ACCOUNT: ${{ vars.API_SERVICE_ACCOUNT }}
   FRONTEND_SERVICE_ACCOUNT: ${{ vars.FRONTEND_SERVICE_ACCOUNT }}
+  # Optional third service: the MCP server over HTTP (mcp.Dockerfile).
+  MCP_SERVICE: ${{ vars.MCP_SERVICE }}
+  MCP_SERVICE_ACCOUNT: ${{ vars.MCP_SERVICE_ACCOUNT }}
 
 permissions:
   contents: read
@@ -140,6 +143,38 @@ jobs:
             --min-instances=0 \
             --max-instances=2
 
+      - name: Build and deploy the MCP server (HTTP)
+        if: ${{ env.MCP_SERVICE != '' }}
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/mcp:${GITHUB_SHA}"
+          CACHE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/mcp:buildcache"
+          docker buildx build . \
+            --file mcp.Dockerfile \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE" \
+            --cache-to "type=registry,ref=$CACHE,mode=max,image-manifest=true,oci-mediatypes=true" \
+            --provenance=false \
+            --push
+          SA_FLAG=()
+          if [ -n "$MCP_SERVICE_ACCOUNT" ]; then SA_FLAG=(--service-account="$MCP_SERVICE_ACCOUNT"); fi
+          # One instance + session affinity: MCP sessions live in memory.
+          gcloud run deploy "$MCP_SERVICE" \
+            "${SA_FLAG[@]}" \
+            --image="$IMAGE" \
+            --region="$REGION" \
+            --allow-unauthenticated \
+            --memory=256Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=1 \
+            --session-affinity \
+            --port=8080 \
+            --timeout=300 \
+            --set-env-vars="FRED_OFFLINE=0" \
+            --set-secrets="FRED_API_KEY=${FRED_API_KEY_SECRET}:latest"
+          MCP_URL=$(gcloud run services describe "$MCP_SERVICE" --region="$REGION" --format='value(status.url)')
+          echo "MCP_URL=$MCP_URL/mcp" >> "$GITHUB_ENV"
+
       - name: Point backend CORS at the deployed frontend
         run: |
           FRONTEND_URL=$(gcloud run services describe "$FRONTEND_SERVICE" \
@@ -156,4 +191,5 @@ jobs:
             echo "### Deployed"
             echo "- Frontend: $FRONTEND_URL"
             echo "- Backend: $BACKEND_URL"
+            if [ -n "${MCP_URL:-}" ]; then echo "- MCP server: $MCP_URL"; fi
           } >> "$GITHUB_STEP_SUMMARY"

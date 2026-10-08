@@ -8,12 +8,17 @@ from NewsAPI.org (one tool) plus one resource. The tool logic lives in
 
 Run directly (stdio transport, for use with Claude Desktop):
     python src/server.py
+
+Or over HTTP (MCP streamable-HTTP transport, e.g. on Cloud Run — see
+mcp.Dockerfile), listening on $PORT at /mcp:
+    MCP_TRANSPORT=streamable-http PORT=8080 python src/server.py
 """
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 import audit_log
 import fred_client
@@ -25,23 +30,47 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 mcp = FastMCP("econ-data")
 
-# One stdio server process serves one client, so a fixed client id is fine
-# here; a multi-tenant deployment would key this on the transport/session.
-_CLIENT_ID = "mcp-stdio"
+# Over stdio one server process serves one client, so one fixed key is fine.
+# Over HTTP, calls are limited per MCP session *and* per client address: the
+# server hands out session ids, so a client could dodge a per-session limit
+# by opening new sessions; the address bucket is looser (several users can
+# share one address) but can't be reset that way.
+_STDIO_CLIENT = "mcp-stdio"
+_ADDRESS_LIMITER = rate_limit.RateLimiter(
+    capacity=rate_limit.limiter.capacity * 4,
+    refill_per_sec=rate_limit.limiter.refill_per_sec * 4,
+)
 
 
-def _guarded(tool_name: str, arguments: dict) -> dict:
+def _client_keys(ctx: Context | None) -> list[tuple[str, rate_limit.RateLimiter | None]]:
+    """(key, limiter) pairs this call is charged against."""
+    try:
+        request = ctx.request_context.request if ctx is not None else None
+    except ValueError:  # no request context (direct call, tests)
+        request = None
+    if request is None or not hasattr(request, "headers"):
+        return [(_STDIO_CLIENT, None)]
+    session = request.headers.get("mcp-session-id") or "no-session"
+    forwarded = request.headers.get("x-forwarded-for", "")
+    address = (forwarded.split(",")[0].strip() if forwarded
+               else (request.client.host if request.client else "unknown"))
+    return [(f"mcp-session:{session}", None), (f"mcp-addr:{address}", _ADDRESS_LIMITER)]
+
+
+def _guarded(tool_name: str, arguments: dict, ctx: Context | None = None) -> dict:
     """Rate-limit the untrusted MCP boundary, then run (and audit-log) the
     shared tool implementation."""
-    rejected = rate_limit.guard(_CLIENT_ID, tool_name)
-    if rejected is not None:
-        audit_log.record("rate_limited", caller=_CLIENT_ID, tool=tool_name)
-        return rejected
-    return tools.call_tool(tool_name, arguments, caller=_CLIENT_ID)
+    keys = _client_keys(ctx)
+    for key, bucket in keys:
+        rejected = rate_limit.guard(key, tool_name, bucket)
+        if rejected is not None:
+            audit_log.record("rate_limited", caller=key, tool=tool_name)
+            return rejected
+    return tools.call_tool(tool_name, arguments, caller=keys[0][0])
 
 
 @mcp.tool()
-def search_series(search_text: str) -> dict:
+def search_series(search_text: str, ctx: Context = None) -> dict:
     """
     Search for a FRED series ID from a plain-language description.
     Does NOT return data — use get_series_observations with the returned
@@ -51,12 +80,13 @@ def search_series(search_text: str) -> dict:
     Args:
         search_text: e.g. "unemployment rate", "core inflation", "10 year treasury"
     """
-    return _guarded("search_series", {"search_text": search_text})
+    return _guarded("search_series", {"search_text": search_text}, ctx)
 
 
 @mcp.tool()
 def get_series_observations(
-    series_id: str, start_date: str, end_date: str, frequency: str = "m"
+    series_id: str, start_date: str, end_date: str, frequency: str = "m",
+    ctx: Context = None,
 ) -> dict:
     """
     Fetch observations for one FRED series over a required date range.
@@ -72,12 +102,13 @@ def get_series_observations(
     return _guarded("get_series_observations", {
         "series_id": series_id, "start_date": start_date,
         "end_date": end_date, "frequency": frequency,
-    })
+    }, ctx)
 
 
 @mcp.tool()
 def compare_series(
-    series_ids: list[str], start_date: str, end_date: str, frequency: str = "m"
+    series_ids: list[str], start_date: str, end_date: str, frequency: str = "m",
+    ctx: Context = None,
 ) -> dict:
     """
     Fetch and align up to 4 series over the same date range for comparison.
@@ -91,11 +122,11 @@ def compare_series(
     return _guarded("compare_series", {
         "series_ids": series_ids, "start_date": start_date,
         "end_date": end_date, "frequency": frequency,
-    })
+    }, ctx)
 
 
 @mcp.tool()
-def get_series_metadata(series_id: str) -> dict:
+def get_series_metadata(series_id: str, ctx: Context = None) -> dict:
     """
     Get units, frequency, last-updated date, and source notes for a series.
     Read-only, small response — no cost guardrail needed.
@@ -103,11 +134,11 @@ def get_series_metadata(series_id: str) -> dict:
     Args:
         series_id: FRED series ID, e.g. "GDP"
     """
-    return _guarded("get_series_metadata", {"series_id": series_id})
+    return _guarded("get_series_metadata", {"series_id": series_id}, ctx)
 
 
 @mcp.tool()
-def search_news(query: str, start_date: str, end_date: str) -> dict:
+def search_news(query: str, start_date: str, end_date: str, ctx: Context = None) -> dict:
     """
     Search recent news headlines relevant to a topic.
 
@@ -123,7 +154,7 @@ def search_news(query: str, start_date: str, end_date: str) -> dict:
     """
     return _guarded("search_news", {
         "query": query, "start_date": start_date, "end_date": end_date,
-    })
+    }, ctx)
 
 
 @mcp.resource("fred://series/{series_id}/summary")
@@ -145,4 +176,8 @@ def series_summary(series_id: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        mcp.settings.host = "0.0.0.0"
+        mcp.settings.port = int(os.environ.get("PORT", "8080"))
+    mcp.run(transport=transport)

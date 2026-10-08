@@ -72,9 +72,9 @@ def _default_limiter() -> RateLimiter:
 limiter = _default_limiter()
 
 
-def guard(client_id: str, tool_name: str) -> dict | None:
+def guard(client_id: str, tool_name: str, bucket: RateLimiter | None = None) -> dict | None:
     """Return a structured error dict if the call should be rejected, else None."""
-    allowed, retry_after = limiter.check(f"{client_id}:{tool_name}")
+    allowed, retry_after = (bucket or limiter).check(f"{client_id}:{tool_name}")
     if allowed:
         return None
     return {
