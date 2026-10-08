@@ -4,7 +4,10 @@
 mcp==1.9.4
 httpx>=0.27.0
 python-dotenv>=1.0.0
-pydantic>=2.6.0
+# <2.14: pydantic 2.14 removed a private helper (eval_type_backport) that
+# mcp 1.9.4's FastMCP imports, so the MCP server stops importing. Lift the cap
+# together with the mcp pin above.
+pydantic>=2.6.0,<2.14
 
 # Multi-agent orchestrator's live backend (AGENT_BACKEND=anthropic).
 # The default stub backend, the evals, and the tests need none of this.
