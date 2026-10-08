@@ -1,39 +1,43 @@
 # Architecture
 
-## Two surfaces, one tool implementation
+## One system, two orchestrations
 
 ```
-                        ┌───────────────────────────┐
-Claude Desktop ───MCP──▶ │  server.py (FastMCP)      │
-                        │   rate limit + audit log  │
-                        └────────────┬──────────────┘
-                                     │
-                                     ▼
-                        ┌───────────────────────────┐
-                        │  tools.py                 │   ← single implementation
-                        │   validate → FRED → cost  │      of the 4 tools
-                        │   guard → shape           │
-                        └────────────┬──────────────┘
-                                     │
-                                     ▼
-                        ┌───────────────────────────┐
-                        │  fred_client.py           │
-                        │   cache · offline fixture │
-                        └────────────┬──────────────┘
-                                     │
-                        ┌────────────┴──────────────┐
-                        │  catalog.py               │  ← which series exist,
-                        │   aliases · search terms  │     shared by fixture,
-                        └───────────────────────────┘     stub planner, evals
-                                     ▲
-                        ┌────────────┴──────────────┐
-User query ───────────▶ │  agents/ (orchestrator)   │
-                        └───────────────────────────┘
+ Surfaces                     Orchestration                      Shared layers (one copy each)
+ ─────────                    ─────────────                      ──────────────────────────────
+
+ React UI (Cloud Run)                                            tools.py   the 4 FRED tools + search_news:
+   │ POST /agent/stream ───▶ Supervisor + 4 specialists ──┐                 validate → fetch → cost guard
+ FastAPI (Cloud Run)          ADK (default) or native,    │                 → shape; untrusted text wrapped
+   │ /search /observations…   on Gemini (Vertex AI) or    ├────▶ catalog.py headline series, aliases,
+   │ ─────────────────────────────────────────────────────┤                 search keywords + relevance
+                              the offline stub            │      dates.py   events, "this year", now-vs-YYYY
+ Streamlit, examples/ ─────▶ Orchestrator-worker pipeline ┤      security.py validation, untrusted wrapping
+                              plan → Data/News Agents      │      cost_tracker per-run token budgets
+                              (concurrent) → Analysis      │      fred_client / news_client
+                              → Presentation, no model     │                 cache, live API or fixture
+ Claude Desktop ──MCP──▶ server.py (rate limit, audit) ────┘
 ```
 
-`server.py` and `agents/` never re-implement a tool — they both call
-`tools.py`. That is what keeps the MCP contract and the agent contract from
-drifting.
+Three surfaces, two ways of orchestrating, and **one copy of everything
+underneath**. Nothing above `tools.py` re-implements a tool, so the MCP
+contract, the HTTP API and both agent pipelines can't drift apart; the
+planners share `catalog.py` (which series exist, how to search FRED for the
+rest) and `dates.py` (what "since the pandemic" means).
+
+Why two orchestrations, and when each is used:
+
+| | Supervisor + specialists | Orchestrator-worker pipeline |
+|---|---|---|
+| Entry point | `agents.supervisor.run_with_framework` | `orchestration.run_query` |
+| Planning | a model (Gemini, Claude) or the offline stub, delegating with tool calls | deterministic `plan_query` → typed `QueryPlan` |
+| Hand-offs | task strings between agents | typed dataclasses |
+| Sources | FRED | FRED + news, fetched concurrently |
+| Used by | the web app (`/agent/*`), the live demo | Streamlit, `examples/`, benchmarks |
+| Graded by | `evals/dataset.jsonl` (50 cases) | `evals/pipeline_cases.py` (routing 18, execution 8) |
+
+`python -m evals` grades **both** in one run and one report
+([`evals/REPORT.md`](../evals/REPORT.md)).
 
 ## The hosted stack (Gemini full stack)
 
@@ -82,6 +86,8 @@ User ─▶ Supervisor ─┼── Research Agent         tools: get_series_met
 * State between specialists is passed **explicitly** in the task string the
   supervisor writes. Specialists are stateless and independently testable.
 * Each agent talks to a `Model` ([`agents/model.py`](../src/agents/model.py)):
+  * `GeminiModel` — a real Gemini function-calling turn (Gemini API or
+    Vertex AI); on the ADK orchestrator, `ResilientGemini` plays this role.
   * `AnthropicModel` — a real Claude tool-use turn (`claude-opus-5`).
   * `StubModel` — a deterministic offline planner
     ([`agents/stub.py`](../src/agents/stub.py)) so evals, CI, and the demo
@@ -103,19 +109,19 @@ User ─▶ Supervisor ─┼── Research Agent         tools: get_series_met
 
 ## Evaluation
 
-[`evals/`](../evals) replays [`dataset.jsonl`](../evals/dataset.jsonl)
-through the supervisor and grades each run on tool selection, series
-grounding, argument validity, orchestration, groundedness, and injection
-resistance. `python -m evals` writes [`evals/REPORT.md`](../evals/REPORT.md)
-and exits non-zero on any regression, so CI fails loudly.
+`python -m evals` grades both orchestrations in one run:
 
-> **Note:** the two sections above describe the original supervisor +
-> 4-specialist pipeline. A second, newer pipeline
-> (`orchestrator.py` → `data_agent.py`/`news_agent.py` → `analysis_agent.py`
-> → `presentation_agent.py`, wired by `src/orchestration.py`) was built
-> alongside it in later phases — see [`README.md`](../README.md) §§1–6 and the
-> note below. The two aren't yet reconciled into one diagram; that's tracked
-> in [`ROADMAP.md`](../ROADMAP.md).
+* **Supervisor dataset** — [`dataset.jsonl`](../evals/dataset.jsonl), 50
+  cases, on either orchestrator (`--framework adk|native`) and any backend:
+  tool selection (required calls in order; extra calls reported), series
+  grounding, argument validity, orchestration, groundedness, injection
+  resistance, and the fetched period.
+* **Pipeline suites** — [`pipeline_cases.py`](../evals/pipeline_cases.py):
+  routing (is the plan right?) and execution (did the right workers run,
+  retry, degrade?). Deterministic, always offline.
+
+It writes [`evals/REPORT.md`](../evals/REPORT.md) and exits non-zero on any
+regression, so CI fails loudly.
 
 ## The orchestrator-worker pipeline
 

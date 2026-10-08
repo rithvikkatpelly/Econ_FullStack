@@ -7,6 +7,7 @@ from __future__ import annotations
 import statistics
 from datetime import UTC, datetime
 
+from evals.pipeline import Row
 from evals.runner import CaseResult, Suite
 
 _METRIC_ORDER = [
@@ -58,7 +59,35 @@ def _case_row(r: CaseResult) -> str:
     )
 
 
-def to_markdown(suite: Suite) -> str:
+def _pipeline_section(routing: list[Row], execution: list[Row]) -> str:
+    if not routing and not execution:
+        return ""
+
+    def score(rows: list[Row]) -> str:
+        return f"{sum(r.passed for r in rows)}/{len(rows)}"
+
+    rows = "\n".join(
+        f"| {'✅' if r.passed else ('⚠️' if r.xfail else '❌')} | {suite} | `{r.id}` | "
+        f"{r.category} | {'; '.join(r.problems) or '—'} |"
+        for suite, group in (("routing", routing), ("execution", execution))
+        for r in group
+    )
+    return f"""
+## Orchestrator-worker pipeline
+
+The second pipeline (`src/orchestration.py`: orchestrator → Data/News Agents →
+Analysis → Presentation) is deterministic, so its suites always run offline and
+gate on every backend: **routing {score(routing)}** (is the plan right?) and
+**execution {score(execution)}** (did the right workers run, retry, degrade?).
+
+| | Suite | Case | Category | Problems |
+|---|---|---|---|---|
+{rows}
+"""
+
+
+def to_markdown(suite: Suite, routing: list[Row] | None = None,
+                execution: list[Row] | None = None) -> str:
     agg = aggregate(suite)
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     metric_lines = "\n".join(
@@ -97,7 +126,7 @@ for the whole suite.
 | | Case | Data-agent tools | Extra | Series | Risk | Failed checks | ms | Tokens |
 |---|---|---|---|---|---|---|---|---|
 {case_lines}
-"""
+{_pipeline_section(routing or [], execution or [])}"""
 
 
 def _backend_note(backend: str) -> str:

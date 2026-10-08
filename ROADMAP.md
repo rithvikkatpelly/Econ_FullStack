@@ -154,8 +154,13 @@ reads as a development story rather than one drop.
       finds nothing) and trusts only a hit whose title shares a word with
       the question. Live: SP500, +10.7% year to date. The routing eval's
       three known gaps are all fixed: 18/18, no exceptions.
-- [ ] Reconcile the two agent pipelines (supervisor+specialists vs.
-      orchestrator/data+news/analysis) into one diagram and one eval harness
+- [x] **Two pipelines, one diagram and one eval harness** —
+      `docs/architecture.md` opens with one diagram: three surfaces, the two
+      orchestrations, and the single shared layer under both (tools, catalog
+      + search, dates, security, budgets, clients), plus when each is used.
+      `python -m evals` grades the supervisor dataset *and* the pipeline's
+      routing + execution suites (moved to `evals/pipeline_cases.py`) into
+      one report, failing on a regression in any of them.
 - [x] **SQLite TTL cache** — `src/cache.py` `TTLCache` replaces the plain
       dict in `fred_client` / `news_client` (drop-in: same `key in c`,
       `c[key]`, iteration). Per-entry expiry; `:memory:` by default,

@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-from evals import report, runner  # evals/__init__ puts src/ on the path
+from evals import pipeline, report, runner  # evals/__init__ puts src/ on the path
 
 DEFAULT_OUT = Path(__file__).resolve().parent / "REPORT.md"
 
@@ -44,18 +44,28 @@ def main(argv: list[str] | None = None) -> int:
 
     suite = runner.run_suite(max_cases=args.max_cases)
     report.print_summary(suite)
+    # The orchestrator-worker pipeline's suites: deterministic and offline,
+    # so they run (and gate) on every backend.
+    routing, execution = pipeline.run_routing(), pipeline.run_execution()
+    print(pipeline.table("pipeline routing", routing).strip().splitlines()[0])
+    print(pipeline.table("pipeline execution", execution).strip().splitlines()[0])
 
-    args.out.write_text(report.to_markdown(suite))
+    args.out.write_text(report.to_markdown(suite, routing, execution))
     print(f"\nwrote {args.out}")
 
     failed = [r.id for r in suite.results if not r.passed]
     if failed:
         print(f"FAILED: {', '.join(failed)}")
+    status = 0
     rate = report.aggregate(suite)["pass_rate"]
     if rate < args.min_pass_rate:
         print(f"pass rate {rate:.0%} is below the {args.min_pass_rate:.0%} threshold")
-        return 1
-    return 0
+        status = 1
+    broken = [r.id for r in routing + execution if r.hard_failure]
+    if broken:
+        print(f"pipeline FAILED: {', '.join(broken)}")
+        status = 1
+    return status
 
 
 if __name__ == "__main__":
