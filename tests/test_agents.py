@@ -153,3 +153,22 @@ def test_every_agent_is_told_todays_date():
     Agent("economic_data_agent", "Static prompt.", [], None, Recorder(), Trace()).run("go")
     assert seen[0].startswith("Static prompt.")
     assert seen[0].endswith(f"Today's date is {date.today().isoformat()}.")
+
+
+def test_a_series_outside_the_catalog_is_reached_through_search(monkeypatch):
+    """Live, FRED search covers every series, not just the seven in
+    catalog.py: a question naming none of them is searched, and the top hit
+    is fetched and cited (FRED stubbed here; HOUST is housing starts)."""
+    import fred_client
+
+    monkeypatch.setattr(fred_client, "search_series", lambda text, limit=5: [
+        {"series_id": "HOUST", "title": "New Privately-Owned Housing Units Started",
+         "frequency": "M", "units": "Thousands of Units"},
+    ])
+    monkeypatch.setattr(fred_client, "get_observations", lambda sid, start, end, freq: [
+        {"date": "2020-01-01", "value": "1617.0"}, {"date": "2026-08-01", "value": "1380.0"},
+    ])
+    trace = run("Show me housing starts since 2020.")
+    assert trace.leaf_tool_sequence == ["search_series", "get_series_observations"]
+    assert trace.series_used == ["HOUST"]
+    assert "HOUST" in trace.final_report
