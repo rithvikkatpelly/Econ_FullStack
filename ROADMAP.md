@@ -136,9 +136,13 @@ reads as a development story rather than one drop.
 - [ ] Global agent rate limits (Memorystore) instead of per-instance buckets
 - [ ] Export `Trace` events as OpenTelemetry spans to Cloud Trace
 
-- [ ] Wire `FetchRequest.search_text` through the Data Agent (act on the
-      "route via search_series" routing decision, don't just record it)
-- [ ] Search-backed catalog so series outside the fixed 7 are reachable
+- [x] **`FetchRequest.search_text` acted on** — the pipeline's Data Agent
+      runs `search_series` when the orchestrator only guessed the series:
+      keeps the guess if it's in the top 3 hits, else takes the top hit, and
+      records which (`SeriesData.resolution`)
+- [x] **Series beyond the fixed 7** — live, FRED search reaches any series
+      and the agents fetch it (verified on the deployed app: housing starts,
+      `HOUST`); the stub reaches them through search too; the UI charts any ID
 - [ ] Relative-event and compound date parsing in the orchestrator
 - [ ] Reconcile the two agent pipelines (supervisor+specialists vs.
       orchestrator/data+news/analysis) into one diagram and one eval harness

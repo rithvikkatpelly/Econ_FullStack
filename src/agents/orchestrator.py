@@ -65,10 +65,9 @@ class FetchRequest:
     """One series the Data Agent should retrieve.
 
     `search_text`, when set, records that the orchestrator could not resolve
-    the query to a precise series name — `series_id` is a best guess and the
-    Data Agent should confirm it via `search_series` first. (Acting on that
-    signal in the Data Agent is a later phase; the routing decision is
-    recorded here and verified by the routing eval.)
+    the query to a precise series name — `series_id` is a best guess, and the
+    Data Agent confirms it via `search_series` first (or swaps in the top hit
+    when the guess isn't among the first few; see `data_agent._resolve`).
     """
 
     series_id: str

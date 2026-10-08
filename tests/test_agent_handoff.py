@@ -166,3 +166,63 @@ def test_unrecognized_query_still_returns_a_result_object():
     run = run_query("What is the airspeed velocity of an unladen swallow?")
     assert isinstance(run, PipelineResult)
     assert run.plan is not None
+
+
+# --- FetchRequest.search_text: the Data Agent confirms a guessed series ------
+
+
+def _search_returns(monkeypatch, ids, error=None):
+    import tools
+
+    real = tools.call_tool
+
+    def call_tool(name, arguments, *, caller="agent"):
+        if name == "search_series":
+            if error:
+                return {"error": error, "detail": "down"}
+            return {"results": [{"series_id": i, "title": i} for i in ids]}
+        return real(name, arguments, caller=caller)
+
+    monkeypatch.setattr(tools, "call_tool", call_tool)
+
+
+def _guess(series_id="FEDFUNDS", search_text="how expensive borrowing has gotten"):
+    from agents.orchestrator import FetchRequest
+
+    return FetchRequest(series_id=series_id, start_date="2022-01-01",
+                        end_date="2024-01-01", search_text=search_text)
+
+
+@pytest.mark.parametrize("hits, error, expect_id, expect_resolution", [
+    (["DGS10", "FEDFUNDS", "GDP"], None, "FEDFUNDS", "confirmed"),
+    (["DGS10", "UNRATE", "GDP", "FEDFUNDS"], None, "DGS10", "replaced"),
+    ([], "fred_api_error", "FEDFUNDS", "search_failed"),
+])
+def test_a_guessed_series_is_confirmed_or_replaced_by_search(
+    monkeypatch, hits, error, expect_id, expect_resolution
+):
+    from agents import data_agent
+
+    _search_returns(monkeypatch, hits, error)
+    series = data_agent._fetch_one(_guess())
+    assert (series.series_id, series.resolution) == (expect_id, expect_resolution)
+    assert series.observations  # fetched under the resolved ID
+
+
+def test_an_exact_series_is_not_searched(monkeypatch):
+    from agents import data_agent
+
+    _search_returns(monkeypatch, [], "must_not_be_called")
+    series = data_agent._fetch_one(_guess(search_text=""))
+    assert (series.series_id, series.resolution) == ("FEDFUNDS", "")
+
+
+def test_the_pipeline_acts_on_a_search_routed_plan():
+    """End to end on the offline fixture: a vague question is routed via
+    search, and the data result says the guess was confirmed."""
+    from orchestration import run_query
+
+    result = run_query("I want data on how expensive borrowing has gotten recently.")
+    assert result.plan.fetches[0].search_text
+    assert result.data[0].series.resolution == "confirmed"
+    assert result.data[0].series_id == "FEDFUNDS"

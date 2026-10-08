@@ -41,6 +41,11 @@ class SeriesData:
     observations: list[dict] = field(default_factory=list)  # [{"date","value"}, ...]
     metadata: dict = field(default_factory=dict)            # notes wrapped as untrusted
     error: str | None = None
+    # How the ID was settled when the orchestrator only had a best guess
+    # (FetchRequest.search_text): "confirmed" (the guess was among the search
+    # hits), "replaced" (the top hit was used instead), or "search_failed"
+    # (kept the guess). Empty when no search was needed.
+    resolution: str = ""
 
     @property
     def observation_count(self) -> int:
@@ -57,7 +62,9 @@ class DataAgentResult:
 
     @property
     def series_id(self) -> str:
-        return self.request.series_id
+        """The series actually fetched — after search, possibly not the
+        orchestrator's guess."""
+        return self.series.series_id if self.series else self.request.series_id
 
     @property
     def ok(self) -> bool:
@@ -114,10 +121,34 @@ def _ensure_wrapped_notes(metadata: dict) -> dict:
     return metadata
 
 
+# How many search hits count as "the guess is confirmed".
+SEARCH_CONFIRM_TOP_N = 3
+
+
+def _resolve(req: FetchRequest) -> tuple[str, str]:
+    """(series ID to fetch, resolution). With `search_text` set the
+    orchestrator only guessed the series: confirm it with search_series, or
+    take the top hit if the guess isn't among the first few."""
+    if not req.search_text:
+        return req.series_id, ""
+    found = tools.call_tool(
+        "search_series", {"search_text": req.search_text[:200]}, caller="data_agent"
+    )
+    results = [] if found.get("error") else found.get("results", [])
+    hits = [r["series_id"] for r in results if r.get("series_id")]
+    if not hits:
+        return req.series_id, "search_failed"
+    if req.series_id in hits[:SEARCH_CONFIRM_TOP_N]:
+        return req.series_id, "confirmed"
+    return hits[0], "replaced"
+
+
 def _fetch_one(req: FetchRequest) -> SeriesData:
     """Blocking fetch for one series via the existing MCP tools."""
+    series_id, resolution = _resolve(req)
     data = SeriesData(
-        series_id=req.series_id,
+        series_id=series_id,
+        resolution=resolution,
         start_date=req.start_date,
         end_date=req.end_date,
         frequency=req.frequency,
@@ -125,7 +156,7 @@ def _fetch_one(req: FetchRequest) -> SeriesData:
 
     if req.fetch_metadata:
         meta = tools.call_tool(
-            "get_series_metadata", {"series_id": req.series_id}, caller="data_agent"
+            "get_series_metadata", {"series_id": series_id}, caller="data_agent"
         )
         if meta.get("error"):
             data.error = f"metadata: {meta['error']}"
@@ -139,7 +170,7 @@ def _fetch_one(req: FetchRequest) -> SeriesData:
         obs = tools.call_tool(
             "get_series_observations",
             {
-                "series_id": req.series_id,
+                "series_id": series_id,
                 "start_date": req.start_date,
                 "end_date": req.end_date,
                 "frequency": req.frequency,
