@@ -31,6 +31,7 @@ _SAFE_REASON = {
     "fred_api_error": "data provider error",
     "news_api_error": "news provider error",
     "validation_error": "invalid request",
+    "not_found_by_search": "no matching FRED series found",
     "session_budget_exceeded": "response budget exceeded",
     "insufficient_data": "not enough data points",
     "no_headlines": "no headlines found",
@@ -68,7 +69,7 @@ def _failure_reasons(analysis: AnalysisResult) -> str:
     if analysis.failed_series:
         bits.append(
             "; ".join(
-                f"{f['series_id']}: {_safe_reason(f.get('reason'))}"
+                f"{f['series_id'] or 'requested series'}: {_safe_reason(f.get('reason'))}"
                 for f in analysis.failed_series
             )
         )

@@ -143,7 +143,17 @@ reads as a development story rather than one drop.
 - [x] **Series beyond the fixed 7** — live, FRED search reaches any series
       and the agents fetch it (verified on the deployed app: housing starts,
       `HOUST`); the stub reaches them through search too; the UI charts any ID
-- [ ] Relative-event and compound date parsing in the orchestrator
+- [x] **Event and two-point dates** (`src/dates.py`, shared by the
+      orchestrator and the stub): "since the pandemic" → March 2020, "since
+      the Great Recession" → Dec 2007, "before 2008" → 2003-2007, "this
+      year" → Jan 1; "now vs 2008" fetches both ends and flags it as a
+      two-point comparison. Each reading is stated in `plan.assumptions`.
+- [x] **Indicators outside the catalog are searched, not refused** — the
+      orchestrator routes "the S&P 500" to FRED search; the Data Agent
+      searches with keywords (FRED matches every word, so a whole question
+      finds nothing) and trusts only a hit whose title shares a word with
+      the question. Live: SP500, +10.7% year to date. The routing eval's
+      three known gaps are all fixed: 18/18, no exceptions.
 - [ ] Reconcile the two agent pipelines (supervisor+specialists vs.
       orchestrator/data+news/analysis) into one diagram and one eval harness
 - [x] **SQLite TTL cache** — `src/cache.py` `TTLCache` replaces the plain

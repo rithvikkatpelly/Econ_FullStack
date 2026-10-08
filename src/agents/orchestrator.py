@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 import catalog
+import dates
 
 # How many series one query is allowed to pull — mirrors the compare_series
 # cap so a plan can't fan out unboundedly.
@@ -172,11 +173,33 @@ def _parse_window(query: str, today: date | None = None) -> tuple[str, str, str,
         start = date(today.year - 10, today.month, 1)
         return start.isoformat(), today.isoformat(), freq, ()
 
+    ytd = dates.this_year_window(query, today)
+    if ytd:
+        return ytd.start, ytd.end, freq, ()
+
+    before = dates.before_year_window(query)
+    if before:
+        return before.start, before.end, freq, (before.note,)
+
+    then = dates.now_vs_year(query)
+    if then:
+        # Two points in time, not a trend: fetch a window spanning both so the
+        # first and latest values are the two ends, and say so.
+        return f"{then}-01-01", today.isoformat(), freq, (
+            f"'now vs {then}' is a two-point comparison; fetched {then}-01-01.."
+            f"{today.isoformat()} so both ends are in the data — compare the first "
+            f"and latest values, not the path between",
+        )
+
     years = sorted({int(y) for y in _YEAR_RE.findall(query)})
     if len(years) >= 2:
         return f"{years[0]}-01-01", f"{years[-1]}-12-01", freq, ()
     if len(years) == 1:
         return f"{years[0]}-01-01", today.isoformat(), freq, ()
+
+    event = dates.event_window(query, today)
+    if event:
+        return event.start, event.end, freq, (event.note,)
 
     # No explicit window — pick a default and say so.
     if _VAGUE_RECENT_RE.search(q):
@@ -210,6 +233,20 @@ def _news_window(start: str, end: str) -> tuple[str, str, str]:
         f"news coverage is shallow; searched news only over {floor.isoformat()}..{end} "
         f"(the data window is wider)"
     )
+
+
+# Words that mark a question as being about an economic or market indicator,
+# even one the built-in catalog doesn't know (it has seven series; FRED has
+# far more). Out-of-scope questions — the weather, restaurants, a bare
+# prompt injection — contain none of these and are still refused.
+_INDICATOR_RE = re.compile(
+    r"(s&p\b|\bdow jones\b|\bnasdaq\b|\b(index|indices|stocks?|yields?|"
+    r"prices?|sales|production|housing|starts|mortgages?|wages?|earnings|payrolls?|"
+    r"claims|sentiment|confidence|inventor(y|ies)|debt|deficit|exchange rates?|"
+    r"dollar|oil|gasoline|gold|money supply|m2|savings|spending|income|imports|"
+    r"exports|trade balance|productivity|vacanc(y|ies)|delinquenc(y|ies))\b)",
+    re.IGNORECASE,
+)
 
 
 # --- planning ---------------------------------------------------------
@@ -281,6 +318,21 @@ def plan_query(user_query: str, today: date | None = None) -> QueryPlan:
         )
 
     scored = catalog.score_query(q)
+    if not scored and _INDICATOR_RE.search(q):
+        # Names an indicator the built-in catalog doesn't have (the S&P 500,
+        # housing starts, oil prices...). FRED has hundreds of thousands of
+        # series: let the Data Agent find it by search instead of refusing.
+        return QueryPlan(
+            user_query=user_query,
+            fetches=(FetchRequest(series_id="", start_date=start, end_date=end,
+                                  frequency=freq, search_text=q),),
+            rationale=f"Not in the built-in catalog; Data Agent searches FRED for {q!r}.",
+            resolution="search",
+            assumptions=assumptions + ("not one of the built-in series; the series is "
+                                       "whatever FRED search ranks first",),
+            requested_series=1,
+            needs_data=True,
+        )
     if not scored:
         return QueryPlan(
             user_query,

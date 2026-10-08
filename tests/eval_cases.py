@@ -133,32 +133,27 @@ ROUTING_CASES: list[RoutingCase] = [
     RoutingCase("h1_empty", "empty", "   ",
                 expect(ok=False, n_series=0, error="empty_query")),
 
-    # --- known gaps (xfail): run and shown, but don't fail the suite ---
+    # --- former known gaps, fixed: outside-catalog search, event and
+    # two-point dates (src/dates.py) ---
 
     RoutingCase(
-        "x1_series_outside_catalog", "known-gap",
+        "x1_series_outside_catalog", "search",
         "How has the S&P 500 performed this year?",
-        expect(resolution="search"),
-        xfail="catalog is 7 fixed series; anything outside it returns cannot_fulfill "
-              "even when FRED has the series (SP500). A search-backed catalog is a later phase.",
+        expect(ok=True, n_series=1, resolution="search"),
     ),
     RoutingCase(
-        "x2_relative_event_date", "known-gap",
+        "x2_relative_event_date", "event-date",
         "How has unemployment changed since the pandemic?",
         lambda plan: [] if any(
             "pandemic" in a.lower() or "could not parse" in a.lower() for a in plan.assumptions
         ) else ["relative-event date ('since the pandemic') not recognised; "
                 "assumptions say 'no date range given'"],
-        xfail="relative-event date references ('since the pandemic', 'pre-2008') fall "
-              "through to the default window and are mislabelled as 'no date range given'.",
     ),
     RoutingCase(
-        "x3_compound_time_comparison", "known-gap",
+        "x3_compound_time_comparison", "two-point-date",
         "How does unemployment now compare to 2008?",
         lambda plan: [] if (plan.error == "needs_clarification" or len(plan.assumptions) > 0)
         else ["compound 'now vs 2008' comparison collapsed to one 2008..today window, no flag"],
-        xfail="compound/relative time comparisons collapse to a single window; "
-              "the two-point-in-time intent is lost.",
     ),
 ]
 

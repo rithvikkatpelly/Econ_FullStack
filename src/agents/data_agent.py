@@ -19,6 +19,7 @@ Errors are collected onto the result (`SeriesData.error`,
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -131,16 +132,69 @@ def _resolve(req: FetchRequest) -> tuple[str, str]:
     take the top hit if the guess isn't among the first few."""
     if not req.search_text:
         return req.series_id, ""
-    found = tools.call_tool(
-        "search_series", {"search_text": req.search_text[:200]}, caller="data_agent"
-    )
-    results = [] if found.get("error") else found.get("results", [])
+    results = _search(req.search_text)
     hits = [r["series_id"] for r in results if r.get("series_id")]
+    if not req.series_id:
+        # No guess at all (an indicator outside the catalog): only trust a hit
+        # whose title shares a word with the question. The offline fixture
+        # pads search results with unrelated series; live FRED ranks well.
+        words = _words(req.search_text)
+        hits = [r["series_id"] for r in results
+                if r.get("series_id") and words & _words(r.get("title", ""))]
     if not hits:
         return req.series_id, "search_failed"
     if req.series_id in hits[:SEARCH_CONFIRM_TOP_N]:
         return req.series_id, "confirmed"
     return hits[0], "replaced"
+
+
+# FRED search matches every word, so a whole question ("How has the S&P 500
+# performed this year?") finds nothing while "S&P 500" finds SP500. Search
+# with the question's keywords, then with fewer of them.
+_SEARCH_FILLER = {
+    "how", "has", "have", "had", "what", "whats", "what's", "is", "are", "was", "were",
+    "the", "a", "an", "of", "in", "on", "for", "to", "and", "or", "me", "my", "i",
+    "show", "tell", "give", "get", "pull", "want", "data", "about", "did", "does", "do",
+    "been", "doing", "performed", "perform", "performing", "changed", "change", "moved",
+    "move", "look", "looked", "looking", "trend", "trends", "compare", "compared", "vs",
+    "this", "that", "these", "year", "years", "month", "months", "quarter", "since",
+    "last", "past", "recent", "recently", "lately", "now", "today", "current",
+    "currently", "so", "far", "ytd", "date", "over", "time", "us", "u.s", "gotten",
+    "become", "be", "will", "would", "it", "its", "with", "from", "at",
+}
+SEARCH_MAX_TRIES = 3
+
+
+def search_terms(text: str) -> list[str]:
+    """The question's keywords, in order: no question words, filler verbs,
+    time phrases or years."""
+    words = [w.strip(".-") for w in re.findall(r"[A-Za-z0-9&.\-]+", text)]
+    return [w for w in words
+            if w and w.lower() not in _SEARCH_FILLER
+            and not re.fullmatch(r"(19|20)\d{2}", w)]
+
+
+def _search(text: str) -> list[dict]:
+    """search_series on the keywords, dropping trailing words until something
+    matches (at most SEARCH_MAX_TRIES calls)."""
+    terms = search_terms(text) or text.split()
+    for n in range(len(terms), max(0, len(terms) - SEARCH_MAX_TRIES), -1):
+        found = tools.call_tool(
+            "search_series", {"search_text": " ".join(terms[:n])[:200]}, caller="data_agent"
+        )
+        results = [] if found.get("error") else found.get("results", [])
+        if results:
+            return results
+    return []
+
+
+_STOPWORDS = {"the", "and", "for", "has", "how", "what", "this", "that", "year",
+              "years", "since", "over", "show", "with", "from", "all", "total"}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9&]+", text.lower())
+            if (len(w) >= 3 or w.isdigit()) and w not in _STOPWORDS}
 
 
 def _fetch_one(req: FetchRequest) -> SeriesData:
@@ -153,6 +207,11 @@ def _fetch_one(req: FetchRequest) -> SeriesData:
         end_date=req.end_date,
         frequency=req.frequency,
     )
+    if not series_id:
+        # Search-only request and nothing matched: say so, don't call the
+        # tools with an empty ID.
+        data.error = "not_found_by_search"
+        return data
 
     if req.fetch_metadata:
         meta = tools.call_tool(

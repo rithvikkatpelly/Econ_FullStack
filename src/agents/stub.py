@@ -22,6 +22,7 @@ import re
 from datetime import date
 
 import catalog
+import dates
 from agents import conversation
 from agents.model import ModelResponse, ToolRequest
 
@@ -107,11 +108,19 @@ def _date_range(text: str) -> tuple[str, str, str]:
         n = int(m.group(1))
         return f"{today.year - n}-{today.month:02d}-01", today.isoformat(), freq
 
+    # Shared with the pipeline's orchestrator (src/dates.py), so both read
+    # "this year", "before 2008" and "since the pandemic" the same way.
+    for window in (dates.this_year_window(text, today), dates.before_year_window(text)):
+        if window:
+            return window.start, window.end, freq
+
     years = sorted({int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", text)})
     if len(years) >= 2:
         return f"{years[0]}-01-01", f"{years[-1]}-12-01", freq
     if len(years) == 1:
         return f"{years[0]}-01-01", today.isoformat(), freq
+    if event := dates.event_window(text, today):
+        return event.start, event.end, freq
     return "2019-01-01", today.isoformat(), freq
 
 
