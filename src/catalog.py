@@ -19,6 +19,7 @@ Two levels of matching, both derived from the same data:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -168,3 +169,60 @@ def score_query(text: str) -> list[tuple[str, int]]:
     hits = [(sid, n) for sid, n in scored if n > 0]
     hits.sort(key=lambda p: (-p[1], order.index(p[0])))
     return hits
+
+
+# --- searching FRED for a question --------------------------------------
+
+# FRED search matches every word, so a whole question ("How has the S&P 500
+# performed this year?") finds nothing while "S&P 500" finds SP500. Search
+# with the question's keywords, then with fewer of them.
+_SEARCH_FILLER = {
+    "how", "has", "have", "had", "what", "whats", "what's", "is", "are", "was", "were",
+    "the", "a", "an", "of", "in", "on", "for", "to", "and", "or", "me", "my", "i",
+    "show", "tell", "give", "get", "pull", "want", "data", "about", "did", "does", "do",
+    "been", "doing", "performed", "perform", "performing", "changed", "change", "moved",
+    "move", "look", "looked", "looking", "trend", "trends", "compare", "compared", "vs",
+    "this", "that", "these", "year", "years", "month", "months", "quarter", "since",
+    "last", "past", "recent", "recently", "lately", "now", "today", "current",
+    "currently", "so", "far", "ytd", "date", "over", "time", "us", "u.s", "gotten",
+    "become", "be", "will", "would", "it", "its", "with", "from", "at",
+}
+SEARCH_MAX_TRIES = 3
+
+
+def search_terms(text: str) -> list[str]:
+    """The question's keywords, in order: no question words, filler verbs,
+    time phrases or years."""
+    words = [w.strip(".-") for w in re.findall(r"[A-Za-z0-9&.\-]+", text)]
+    return [w for w in words
+            if w and w.lower() not in _SEARCH_FILLER
+            and not re.fullmatch(r"(19|20)\d{2}", w)]
+
+
+def search_queries(text: str) -> list[str]:
+    """What to send to search_series, in order: the keywords, then fewer of
+    them (at most SEARCH_MAX_TRIES)."""
+    terms = search_terms(text) or text.split()
+    stop = max(0, len(terms) - SEARCH_MAX_TRIES)
+    return [" ".join(terms[:n])[:200] for n in range(len(terms), stop, -1)]
+
+
+_STOPWORDS = {"the", "and", "for", "has", "how", "what", "this", "that", "year",
+              "years", "since", "over", "show", "with", "from", "all", "total"}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9&]+", text.lower())
+            if (len(w) >= 3 or w.isdigit()) and w not in _STOPWORDS}
+
+
+def relevant_hits(question: str, results: list[dict]) -> list[str]:
+    """Search hits that are actually about `question`, in rank order: the
+    title shares a word with it, or the catalog's own search terms map the
+    question to that series ("borrowing" → FEDFUNDS). The offline fixture
+    pads results with unrelated series, so a top hit alone proves nothing."""
+    words = _words(question)
+    known = {sid for sid, _ in score_query(question)}
+    return [r["series_id"] for r in results
+            if r.get("series_id")
+            and (r["series_id"] in known or words & _words(r.get("title", "")))]

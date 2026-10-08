@@ -240,11 +240,18 @@ def _plan_economic_data_agent(messages: list[dict]) -> ModelResponse:
 
     series = _requested_series(task)
 
-    if not series and "search_series" not in called:
-        return _tool("econ", messages, "search_series", {"search_text": task[:120]})
-
-    if not series and "search_series" in called:
-        series = _series_from_search_results(results)[:1]
+    if not series:
+        # Search with keywords (FRED matches every word), with fewer if that
+        # finds nothing, and fetch only a hit that's about the question —
+        # never just the top result (the offline fixture pads with unrelated
+        # series, so "the S&P 500" would come back as unemployment).
+        queries = catalog.search_queries(task)
+        searches = called.count("search_series")
+        latest = _latest_search_results(results)
+        if searches == 0 or (not latest and searches < len(queries)):
+            return _tool("econ", messages, "search_series",
+                         {"search_text": queries[min(searches, len(queries) - 1)]})
+        series = catalog.relevant_hits(task, latest)[:1]
 
     if not series:
         return _text("Could not resolve any FRED series for this request.")
@@ -323,6 +330,10 @@ def _plan_report_agent(messages: list[dict]) -> ModelResponse:
         "answer to your question. (Offline stub narrative — a live backend, "
         "Gemini or Claude, produces the full write-up.)"
     )
+    if not ids:
+        body = ("I couldn't find a FRED series that matches this question, so there's "
+                "no data to report. Try naming the indicator differently (e.g. 'housing "
+                "starts', 'S&P 500', '30-year mortgage rate').")
     evidence = "\n".join(f"  - {sid}" for sid in ids) or "  - (none)"
     report = f"{body}\n\nEvidence\nSeries used:\n{evidence}\nRisk signal: {signal}"
     if skipped := re.search(r"Not fetched: ([A-Z0-9, ]+)", task):
@@ -363,14 +374,15 @@ def _one_series_line(sid: str, obs: list[dict]) -> str:
     )
 
 
-def _series_from_search_results(result_texts: list[str]) -> list[str]:
-    for txt in result_texts:
+def _latest_search_results(result_texts: list[str]) -> list[dict]:
+    """The hits from the most recent search_series call ([] if it found none)."""
+    for txt in reversed(result_texts):
         try:
             payload = json.loads(txt)
         except json.JSONDecodeError:
             continue
-        if "results" in payload and payload["results"]:
-            return [r["series_id"] for r in payload["results"]]
+        if isinstance(payload, dict) and "results" in payload:
+            return payload["results"] or []
     return []
 
 
