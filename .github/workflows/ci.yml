@@ -21,10 +21,10 @@ jobs:
         run: ruff check .
       - name: Unit + integration tests
         run: pytest -q
-      - name: Orchestrator routing eval (prints the table)
-        run: python tests/test_routing.py
-      - name: Pipeline eval — worker routing / retry / degradation (prints the table)
-        run: python tests/test_pipeline_eval.py
+      - name: Pipeline routing + execution tables
+        run: pytest -q -s tests/test_routing.py tests/test_pipeline_eval.py
+      # Grades the 50-case supervisor dataset and the pipeline's routing +
+      # execution suites in one report; fails on a regression in any of them.
       - name: Evaluation suite on ADK (stub backend, hermetic)
         run: python -m evals
       - name: Evaluation suite on the native orchestrator (stub backend, hermetic)
