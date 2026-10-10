@@ -129,10 +129,10 @@ reads as a development story rather than one drop.
       Run's URLs for the frontend. All Google; the Render + Firebase config
       was dropped.
 
-### Next
-
-- [ ] Run the live eval on all 25 cases (needs a couple of fresh days of
-      free-tier quota, or Vertex AI once deployed)
+- [x] **Every public endpoint rate-limited** — the HTTP tool endpoints
+      share a per-client bucket (60/min, burst 20), so the API can't be looped
+      to exhaust the FRED key; `scripts/enable-cloud-extras.sh` switches on
+      MCP-over-HTTP, Cloud Trace and Firestore limits in one idempotent run.
 - [x] **Rate limits shared across instances** — `RATE_LIMIT_BACKEND=firestore`
       keeps each client's bucket in Firestore, updated in a transaction, so 3
       instances don't mean 3x the limit. Firestore rather than Memorystore:
@@ -144,7 +144,6 @@ reads as a development story rather than one drop.
       (framework, the backend that answered, stub fallback, tokens, series)
       and an event per delegation and tool call. The question text isn't
       recorded. Free tier: 2.5M spans/month.
-
 - [x] **`FetchRequest.search_text` acted on** — the pipeline's Data Agent
       runs `search_series` when the orchestrator only guessed the series:
       keeps the guess if it's in the top 3 hits, else takes the top hit, and
@@ -186,5 +185,13 @@ reads as a development story rather than one drop.
       `/mcp`; rate-limited per MCP session and per client address (4x looser,
       but new sessions can't reset it), verified with the MCP client over real
       HTTP. `mcp.Dockerfile` + an optional deploy step (one instance, session
-      affinity). Cloud Run service pending a fresh `gcloud` login.
+      affinity). Switched on in GCP by `scripts/enable-cloud-extras.sh`.
+
+### Next
+
+- [ ] Run the live eval on all 50 cases on Vertex AI (~0.5M tokens, under
+      $1; `gcloud auth application-default login`, then
+      `GOOGLE_GENAI_USE_VERTEXAI=true GOOGLE_CLOUD_PROJECT=econ-fullstack-510918
+      GOOGLE_CLOUD_LOCATION=global AGENT_BACKEND=gemini FRED_OFFLINE=1
+      python -m evals --min-pass-rate 0 --out evals/REPORT.gemini.md`)
 - [ ] A short screen recording in the README

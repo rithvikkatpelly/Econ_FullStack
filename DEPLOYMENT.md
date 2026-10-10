@@ -1,15 +1,19 @@
 # Deployment
 
-The repo has three runnable surfaces. Only the **HTTP API + frontend** are
-meant to be *hosted*; the MCP server runs on the user's own machine next to
-Claude Desktop, and the Streamlit page is a local demo.
+The repo has three runnable surfaces. The **frontend and HTTP API** are
+hosted on Cloud Run (live at https://econ-data-frontend-kio6fmbpta-uc.a.run.app);
+the **MCP server** runs next to Claude Desktop over stdio, and can also be
+hosted over HTTP as a third Cloud Run service (§11); the Streamlit page is a
+local demo.
 
 ## Cloud Run + Vertex AI
 
 ```
 frontend/ (Cloud Run, nginx) ──HTTP/SSE──▶ backend/app (Cloud Run, FastAPI) ──▶ FRED API
                                               │   └─ /agent/* ──▶ Gemini (Vertex AI)
-       src/server.py (MCP, local) ───────────┘  same src/tools.py, no shared process
+                                              │        optional: spans ──▶ Cloud Trace
+                                              │        optional: rate limits ──▶ Firestore
+src/server.py (MCP: stdio locally, or HTTP on Cloud Run) ─┘  same src/tools.py
 ```
 
 The hosted stack is all Google: React on Cloud Run, FastAPI on Cloud Run, and
@@ -42,7 +46,10 @@ Vertex AI, authenticated as the Cloud Run service account (no model key).
 - `.github/workflows/deploy.yml` — builds both images, pushes to Artifact
   Registry, deploys both to Cloud Run on every push to `main`, and wires the
   backend's `--startup-probe` to `GET /health` (so a revision that boots but
-  can't actually serve never receives traffic).
+  can't actually serve never receives traffic). Optionally a third image and
+  service, the MCP server over HTTP (§11).
+- `scripts/enable-cloud-extras.sh` — switches on the three opt-in features
+  (§11) in one run.
 
 **What this document covers:** the one-time GCP setup that workflow depends
 on. After it's done once, deploying is just `git push`. **All of it has
@@ -281,6 +288,9 @@ Optional:
 | `GEMINI_MODEL` | `gemini-3.8-flash` | any Gemini model ID available to your project |
 | `VERTEX_LOCATION` | `global` | a Vertex AI region, if you need data residency |
 | `GEMINI_API_KEY_SECRET` | *(unset → Vertex AI)* | `gemini-api-key`, to use an API key instead (step 4) |
+| `MCP_SERVICE`, `MCP_SERVICE_ACCOUNT` | *(unset → no MCP service)* | `econ-data-mcp` and its runtime account (§11) |
+| `CLOUD_TRACE` | `0` | `1` to export agent runs to Cloud Trace (§11) |
+| `RATE_LIMIT_BACKEND` | `memory` | `firestore` to share rate limits across instances (§11) |
 
 None of these variables are secret — they're just names/IDs the workflow
 interpolates into `gcloud` commands (`.github/workflows/deploy.yml`). Until
@@ -345,6 +355,10 @@ call it. See "Known gaps to close before real traffic" below. The tool
 endpoints have no rate limiting or API-key check; FRED API keys aren't
 billed per call, so the exposure there is "someone exhausts your daily FRED
 quota," not a surprise bill.
+
+The tool endpoints are rate-limited per client address
+(`API_RATE_LIMIT_PER_MIN`, default 60/min with a burst of 20), so the public
+API can't be looped to exhaust your FRED quota.
 
 The agent endpoints **are** billed per call (each question is several
 Gemini requests), so they carry their own guardrails: a per-client token
@@ -411,10 +425,35 @@ gcloud billing budgets create \
 ```bash
 gcloud run services delete econ-data-api --region="$REGION" --quiet
 gcloud run services delete econ-data-frontend --region="$REGION" --quiet
+gcloud run services delete econ-data-mcp --region="$REGION" --quiet   # if §11 ran
+gcloud firestore databases delete --database='(default)' --quiet     # if §11 ran
 gcloud artifacts repositories delete econ-data --location="$REGION" --quiet
 gcloud secrets delete fred-api-key --quiet
 gcloud secrets delete gemini-api-key --quiet   # only if you created it
 ```
+
+---
+
+## 11. Optional extras: MCP over HTTP, Cloud Trace, shared rate limits
+
+All three are built, tested and wired into `deploy.yml`, and off until their
+cloud resources exist. One idempotent script creates those, sets the repo
+variables and redeploys:
+
+```bash
+gcloud auth login            # an owner of the project
+scripts/enable-cloud-extras.sh
+```
+
+| Feature | What the script sets up | Cost |
+|---|---|---|
+| **MCP server over HTTP** (`mcp.Dockerfile`, `/mcp`) | `econ-mcp-runtime` account (reads the FRED secret only); `MCP_SERVICE=econ-data-mcp`. Deployed as one instance with session affinity, since MCP sessions live in memory; rate-limited per session *and* per client address. | Cloud Run free tier |
+| **Cloud Trace** (`CLOUD_TRACE=1`, `backend/app/telemetry.py`) | Telemetry + Cloud Trace APIs; trace-writer role for `econ-api-runtime`. ADK's spans for every agent, model and tool call, under one root span per question (the question text isn't recorded). | free up to 2.5M spans/month |
+| **Shared rate limits** (`RATE_LIMIT_BACKEND=firestore`, `src/rate_limit_firestore.py`) | the `(default)` Firestore database (native, `us-central1`), a TTL policy on `rate_limits.expires_at`, `roles/datastore.user` for `econ-api-runtime`. Every instance then draws from one bucket per client; buckets are keyed by a hash, never the address. Falls back to the local bucket if Firestore is down. | Firestore free tier (50k reads / 20k writes a day) |
+
+Check after the redeploy: the job summary lists the MCP URL
+(`https://econ-data-mcp-….run.app/mcp`); Cloud Trace shows `agent.question`
+spans after a question; the Firestore console shows `rate_limits` documents.
 
 ---
 
@@ -489,7 +528,12 @@ Docker build context (`.dockerignore`).
 | `GEMINI_FALLBACK_MODELS` | optional | Defaults to `gemini-3.6-flash,gemini-3.5-flash` — used when the current model is overloaded or out of quota. |
 | `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | set by the workflow | Route Gemini calls through Vertex AI as the runtime service account. Omitted when `GEMINI_API_KEY` is used instead. |
 | `GEMINI_API_KEY` | only without Vertex AI | Via Secret Manager, like `FRED_API_KEY`. |
-| `AGENT_RATE_LIMIT_PER_MIN`, `AGENT_RATE_LIMIT_BURST`, `AGENT_MAX_CONCURRENT_RUNS`, `AGENT_MAX_QUERY_CHARS` | optional | Agent-endpoint spend guards; defaults 6, 3, 2, 500. Rate-limit buckets and the run cap are per instance. |
+| `AGENT_RATE_LIMIT_PER_MIN`, `AGENT_RATE_LIMIT_BURST`, `AGENT_MAX_CONCURRENT_RUNS`, `AGENT_MAX_QUERY_CHARS` | optional | Agent-endpoint spend guards; defaults 6, 3, 2, 500. |
+| `API_RATE_LIMIT_PER_MIN`, `API_RATE_LIMIT_BURST` | optional | The tool endpoints' shared per-client limit; defaults 60, 20. |
+| `RATE_LIMIT_BACKEND` | set by the workflow | `memory` (per instance) or `firestore` (shared, §11). |
+| `CLOUD_TRACE` | set by the workflow | `1` exports agent runs to Cloud Trace (§11). |
+| `AGENT_STUB_FALLBACK` | optional | Default on: a used-up Gemini quota is answered on the offline stub, labelled. |
+| `GEMINI_TIMEOUT_S` | optional | Default 120: a request with no progress for this long is retried as a dropped connection. |
 | `AGENT_RUN_TOKEN_BUDGET` | optional | Defaults to 30000. Tool-data tokens one agent question may pull — each run has its own budget, separate from `SESSION_TOKEN_BUDGET`. |
 | `SESSION_TOKEN_BUDGET` | optional | Defaults to 50000. The budget the **tool endpoints** share, per process (module-level singleton in `cost_tracker.py`) — see "Known gaps" below. Agent questions don't spend from it. |
 | `AUDIT_LOG_PATH` | already set | `backend/Dockerfile` sets this to `/tmp/audit.log`. The container runs as a non-root `appuser` (see the Dockerfile), which can't create a new file under `/app/backend` (owned by root); `/tmp` is always writable. Audit logging is designed to fail open on a write error (`audit_log.py`), so this isn't fatal either way — it just silently stops logging if pointed somewhere unwritable. Cloud Run's filesystem (including `/tmp`) is ephemeral regardless — it doesn't survive a restart or scale-to-zero, so treat this as debug-tail-the-logs, not a durable audit trail, until it's shipped somewhere external. |
@@ -503,14 +547,10 @@ want the cache to survive restarts.
 
 ## Known gaps to close before real traffic
 
-- **No auth / no rate limiting on the HTTP tool endpoints.** `/agent/*` is
-  rate-limited (above), but `/search`, `/observations`, `/compare` and
-  `/metadata` are not; `src/rate_limit.py` otherwise guards only the MCP
-  boundary. A public
-  deployment needs at least an API key check or a reverse-proxy rate limit,
-  or it's an open proxy to your FRED key (see §9 above for how bad that
-  actually is). The MCP server's `rate_limit.guard` could be lifted into a
-  FastAPI dependency — same token-bucket, keyed on client IP or an API key.
+- **No auth.** Every endpoint is rate-limited per client address (tool
+  endpoints 60/min, agent endpoints 6/min), but there are no API keys or
+  logins: a determined caller rotating addresses could still spend the
+  agents' token allowance. Cloud Armor or API keys in front would close it.
 - **The landing page spends from that shared budget.** The hero carousel
   fetches seven series (~1.7k of the default 50k tokens) on a browser's first
   visit, then caches them in `localStorage` for six hours. That's fine for a
@@ -527,13 +567,9 @@ want the cache to survive restarts.
 - **`FRED_API_KEY` in error text.** `audit_log.py` already redacts it; spot-
   check that a forced upstream error (e.g. an invalid key) doesn't echo the
   key in a 502 body before going public.
-- **Agent guardrails are per instance.** The rate-limit buckets and the
-  concurrent-run cap live in process memory, so each Cloud Run instance
-  enforces its own. `--max-instances` is what bounds the total; a shared
-  store (Memorystore/Redis) would make the limits global.
-- **Observability.** Structured request logs go to Cloud Logging; there's no
-  per-agent tracing yet. Exporting the `Trace` events as OpenTelemetry spans
-  (Cloud Trace) is the natural next step — the event hook already exists.
+- **The concurrent-run cap is per instance.** Rate limits become global with
+  `RATE_LIMIT_BACKEND=firestore` (§11); the cap on simultaneous agent runs
+  stays per instance, bounded in total by `--max-instances=3`.
 - **Frontend bundle size.** ~540 KB, mostly `recharts`; consider
   `build.rollupOptions.output.manualChunks` if it matters. Cosmetic, not
   blocking.

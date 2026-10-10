@@ -13,20 +13,21 @@ The same four tools are exposed two ways: as an **MCP server** you can point
 Claude Desktop at, and as the tool surface for an **in-process multi-agent
 orchestrator**. Both call one implementation, so the two can't drift.
 
-It is also a **Google agent-stack app**: the multi-agent pipeline is built on
-Google's **Agent Development Kit (ADK)** and runs on **Gemini**, behind a
-FastAPI back end that streams its progress to a React front end as a live
-activity timeline — see [Two orchestrators](#two-orchestrators-adk-and-native)
-and [Ask the agent](#ask-the-agent-gemini-full-stack). It has run end to end
-on live Gemini through the Gemini API. The deployment is all Google too —
-frontend and API on Cloud Run, agents on Gemini through Vertex AI, images in
-Artifact Registry, the FRED key in Secret Manager, deployed by GitHub
-Actions with keyless Workload Identity Federation. **Live demo: https://econ-data-frontend-kio6fmbpta-uc.a.run.app**
-(see [DEPLOYMENT.md](DEPLOYMENT.md)). If
-the model's quota runs out, questions are answered on the offline stub
-instead of failing, and labelled as such. Live Gemini
-evals are published as-is: the first scored 0/8, and after prompt fixes the
-same cases score 8/8 ([docs/live-eval.md](docs/live-eval.md)).
+**Live demo: https://econ-data-frontend-kio6fmbpta-uc.a.run.app**
+
+It's also a **Google full-stack app**. The agents are built on Google's
+**Agent Development Kit (ADK)** and run on **Gemini through Vertex AI**,
+behind a FastAPI back end that streams their progress to a React front end
+as a live activity timeline ([Two orchestrators](#two-orchestrators-adk-and-native),
+[Ask the agent](#ask-the-agent-gemini-full-stack)). Both run on **Cloud Run**,
+with images in Artifact Registry, the FRED key in Secret Manager, and keyless
+deploys from GitHub via Workload Identity Federation
+([DEPLOYMENT.md](DEPLOYMENT.md)). If the model's quota runs out, questions
+are answered on the offline stub instead of failing, and labelled as such.
+
+Live Gemini evals are published as-is: the first scored 0/8, and after the
+prompt fixes it pointed to, the same cases score 8/8
+([docs/live-eval.md](docs/live-eval.md)).
 
 It runs end to end with **no API key** — a deterministic planner stands in for
 the model and a synthetic fixture stands in for FRED — which is what lets the
@@ -65,11 +66,11 @@ evaluation suite be hermetic and reproducible.
 | **Tool-contract design** | Five narrow tools across two data sources (FRED + news), strict typed inputs, structured (never raised) errors, idempotent caching — [§1](#1-tool-contracts) |
 | **Google Agent Development Kit** | Supervisor + specialists as ADK `LlmAgent`s wired with `AgentTool`, FRED tools as `FunctionTool`s, ADK's `Gemini` model hardened for real quota/overload behaviour, `root_agent` for `adk web` — and proven equivalent to the native orchestrator on every eval case — [Two orchestrators](#two-orchestrators-adk-and-native) |
 | **Multi-agent systems** | Supervisor + four specialists (one pipeline), and a second orchestrator → Data/News Agent(s) → Analysis Agent pipeline that fans out to *heterogeneous* sources concurrently and reasons across them — [§3](#3-multi-agent-orchestration) |
-| **AI safety** | Input validation, prompt-injection containment (FRED metadata *and* adversarial news headlines), secret redaction, least-privilege tools, rate limiting, audit log — [§5](#5-security), [Cross-source security](#cross-source-security), [SECURITY.md](SECURITY.md) |
+| **AI safety** | Input validation, prompt-injection containment (FRED metadata, adversarial news headlines, the question itself, earlier turns), secret redaction, least-privilege tools and service accounts, per-client rate limits on every public endpoint, audit log — [§5](#5-security), [Cross-source security](#cross-source-security), [SECURITY.md](SECURITY.md) |
 | **Context / cost engineering** | Cache-friendly prompt layout, result shaping, a pre-return token budget with a shrink fallback, per-role effort — [§4](#4-context-and-cost) |
 | **Evaluation** | 50-case dataset (10 adversarial) graded on seven metrics, plus the second pipeline's routing and execution suites, in one report and one CI gate; live Gemini runs published as-is — [§6](#6-evaluation) |
-| **Full-stack delivery** | React + FastAPI, agent progress streamed over SSE into a live activity timeline; Dockerfiles and a Cloud Run + Vertex AI pipeline with keyless Workload Identity Federation (deploy-ready) — [Ask the agent](#ask-the-agent-gemini-full-stack), [DEPLOYMENT.md](DEPLOYMENT.md) |
-| **Production hygiene** | Hermetic tests, deterministic offline mode, `pyproject` + ruff, CI on every push |
+| **Full-stack delivery** | React + FastAPI, agent progress streamed over SSE into a live activity timeline; **live on Cloud Run + Vertex AI**, deployed on every push with keyless Workload Identity Federation; the MCP server can also be hosted over HTTP — [Ask the agent](#ask-the-agent-gemini-full-stack), [DEPLOYMENT.md](DEPLOYMENT.md) |
+| **Production hygiene** | Hermetic tests (322), deterministic offline mode, `pyproject` + ruff, CI on every push; request timeouts and retries for real network faults found by live runs; optional Cloud Trace spans and Firestore-backed rate limits shared across instances |
 
 Architecture diagram and the guardrail-by-layer table:
 [docs/architecture.md](docs/architecture.md).
@@ -285,6 +286,16 @@ Series(
 
 Adding a series is one `Series(...)` entry; the fixture, planner, and evals
 pick it up automatically.
+
+**Beyond the catalog.** The catalog is the headline series, not a limit. A
+question about anything else ("the S&P 500", "housing starts", "oil prices")
+goes to FRED search, which covers hundreds of thousands of series.
+`catalog.search_queries` turns the question into keywords (FRED matches every
+word, so a whole question finds nothing) and retries with fewer;
+`catalog.relevant_hits` keeps only results that are actually about the
+question. Live: "How has the S&P 500 performed this year?" → `SP500`.
+Date phrases both planners share ("since the pandemic", "this year",
+"before 2008", "now vs 2008") live in [`src/dates.py`](src/dates.py).
 
 ### 3. Multi-agent orchestration
 
@@ -981,8 +992,13 @@ curl -X POST https://econ-data-api-a1b2c3d4e5-uc.a.run.app/observations \
 ```
 
 The deploy is public and unauthenticated by design (no login system on this
-project) — see DEPLOYMENT.md's "Known gaps" for what that means and what to
-close first if this needs to hold up to real traffic.
+project); every endpoint is rate-limited per client address instead. See
+DEPLOYMENT.md's "Known gaps" for what that means.
+
+**Optional extras**, built and tested, switched on with one script
+(`scripts/enable-cloud-extras.sh`, [DEPLOYMENT.md §11](DEPLOYMENT.md#11-optional-extras-mcp-over-http-cloud-trace-shared-rate-limits)):
+the MCP server as a third Cloud Run service over HTTP, agent runs exported to
+**Cloud Trace**, and rate limits shared across instances in **Firestore**.
 
 ---
 
@@ -1011,13 +1027,19 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 | `AGENT_MAX_TOKENS` | `8000` | `max_tokens` per agent turn |
 | `SESSION_TOKEN_BUDGET` | `50000` | cost guardrail ceiling per session |
 | `SUPERVISOR_MAX_ITERATIONS` | `8` | supervisor loop cap (specialists: 6) |
-| `TOOL_RATE_LIMIT_PER_MIN` | `120` | MCP-boundary rate limit |
+| `TOOL_RATE_LIMIT_PER_MIN` | `120` | MCP-boundary rate limit (per session; per address 4x over HTTP) |
 | `TOOL_RATE_LIMIT_BURST` | `30` | token-bucket capacity |
 | `AUDIT_LOG_PATH` | `audit.log` | where the audit log is written |
 | `AGENT_RATE_LIMIT_PER_MIN` / `_BURST` | `6` / `3` | per-client limit on `/agent/*` |
 | `AGENT_MAX_CONCURRENT_RUNS` | `2` | concurrent agent runs per API process |
 | `AGENT_MAX_QUERY_CHARS` | `500` | longest accepted question |
 | `AGENT_RUN_TOKEN_BUDGET` | `30000` | tool-data tokens one agent question may pull (its own budget) |
+| `AGENT_STUB_FALLBACK` | `true` | on Gemini, answer on the offline stub (labelled) once the quota is used up |
+| `GEMINI_TIMEOUT_S` | `120` | a Gemini request with no progress this long is retried as a dropped connection |
+| `API_RATE_LIMIT_PER_MIN` / `_BURST` | `60` / `20` | per-client limit shared by the HTTP tool endpoints |
+| `RATE_LIMIT_BACKEND` | `memory` | `firestore` to share the HTTP limits across instances |
+| `CLOUD_TRACE` | `0` | `1` to export agent runs to Cloud Trace |
+| `MCP_TRANSPORT` | `stdio` | `streamable-http` serves the MCP server on `$PORT` at `/mcp` |
 | `CORS_ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | comma-separated browser origins allowed to call `backend/app` |
 
 ---
@@ -1025,12 +1047,15 @@ All optional; sensible defaults everywhere. See [`.env.example`](.env.example).
 ## Project layout
 
 ```
+mcp.Dockerfile      the MCP server over HTTP, for Cloud Run (MCP_TRANSPORT=streamable-http)
+scripts/enable-cloud-extras.sh  switches on MCP-over-HTTP, Cloud Trace and Firestore rate limits in GCP
 streamlit_app.py    demo UI — the four FRED tools called directly (no MCP), validate → pre-flight → fetch → guardrail
 backend/            HTTP interface — a second, deployable surface over src/tools.py (MCP server unchanged)
   app/
     __init__.py     puts ../src on sys.path + loads .env into os.environ (runs before any src import)
     main.py         FastAPI: /health, POST /search, POST /observations, POST /compare, GET /metadata/{id}
     agent.py        POST /agent/ask + /agent/stream (SSE): the supervisor pipeline over HTTP, rate-limited
+    telemetry.py    Cloud Trace export (CLOUD_TRACE=1): ADK's spans + one root span per question
     schemas.py      pydantic request/response models mirroring src/tools.py output
   core/config.py    pydantic-settings, backed by the repo-root .env (FRED key, budget, CORS, agent/Gemini)
 frontend/           React + Vite + TS web app over backend/app: hero carousel, tabbed explorer, charts, CSV export
@@ -1043,14 +1068,14 @@ src/
     agent.py        root_agent, for `adk web` / `adk run`
   server.py         MCP server (FastMCP): 5 tools + 1 resource, rate limit + audit at the boundary
   tools.py          the one implementation of the 5 tools + their Anthropic JSON schemas
-  catalog.py        every series the project knows: FRED metadata, aliases, search terms, fixture shape
+  catalog.py        the headline series (FRED metadata, aliases, fixture shape) + FRED search keywords and relevance
   fred_client.py    cached FRED wrapper; renders the synthetic fixture in offline mode
   news_client.py    cached news-headline wrapper; mirrors fred_client.py exactly
   cache.py          TTLCache — sqlite-backed idempotency cache with per-entry expiry
   cost_tracker.py   token/cost estimation, per-session + per-run budget, shrink-or-refuse guardrail
   security.py       input validation, untrusted-content + inter-agent-message wrapping, secret redaction
   rate_limit.py     token-bucket rate limiter (per MCP session and per address over HTTP)
-  catalog.py        the headline series, aliases, FRED search keywords + relevance check
+  rate_limit_firestore.py  the same buckets in Firestore, shared by every instance (opt-in)
   dates.py          date phrases both planners share: events, "this year", now-vs-YYYY
   audit_log.py      append-only JSONL security audit log
   orchestration.py  run_query(): orchestrator → Data/News Agent(s) [retried] → Analysis → Presentation
@@ -1061,7 +1086,7 @@ src/
     analysis_agent.py  structured numbers only (%-change, correlation, themes); no tool access
     presentation_agent.py  AnalysisResult → bounded sectioned summary; safe failure labels
     timing.py          shared concurrency-overlap check for both agent kinds
-    base.py            the tool-use loop for the older supervisor pipeline below
+    base.py            the tool-use loop every supervisor-pipeline agent runs (native orchestrator)
     supervisor.py      decomposes the question, delegates to specialists
     specialists.py     the four specialist agents and their tool surfaces
     model.py           GeminiModel (Gemini/Vertex AI, streaming) + AnthropicModel (Claude) + StubModel (offline)
@@ -1084,9 +1109,10 @@ examples/
   measure.py         regenerates docs/measurements.md from the offline fixture
 tests/  catalog, fred + news clients, security (incl. news injection), rate limit, audit,
         both agent pipelines, Gemini backend, routing eval, HTTP + agent API, MCP over HTTP,
-        dates + search, evals — 315 tests, hermetic, ~5s
+        dates + search, rate limits, tracing, evals — 322 tests, hermetic, ~10s
 docs/
-  architecture.md   diagrams + the guardrail-by-layer table
+  architecture.md   one diagram of both pipelines over the shared layer + the guardrail table
+  live-eval.md      the live Gemini evals: 0/8 baseline → 8/8, and what changed
   measurements.md   generated context/cost numbers
 ```
 
@@ -1095,7 +1121,7 @@ docs/
 ## Testing
 
 ```bash
-pytest -q          # 315 tests, no network, deterministic, ~5s
+pytest -q          # 322 tests, no network, deterministic, ~10s
 ruff check .       # lint (config in pyproject.toml)
 python -m evals    # the eval suite is also a test (test_evals.py runs it)
 ```

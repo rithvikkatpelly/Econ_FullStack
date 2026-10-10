@@ -33,7 +33,7 @@ What changed, all Google ADK + Gemini, no new tools:
 Files: [`REPORT.gemini.md`](../evals/REPORT.gemini.md) (this run),
 [`REPORT.gemini.baseline.md`](../evals/REPORT.gemini.baseline.md) (the first).
 
-Caveat: 8 of the 25 cases (all four injection probes + the first four
+Caveat: 8 of the then-25 (now 50) cases (all four injection probes + the first four
 others), one run each, on the free tier. It's a strong signal on these
 cases, not a measurement of the whole dataset.
 

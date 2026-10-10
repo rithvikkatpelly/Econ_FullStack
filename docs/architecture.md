@@ -104,7 +104,7 @@ User ─▶ Supervisor ─┼── Research Agent         tools: get_series_met
 | Untrusted-content wrapping | `tools.py`, on every metadata response | `security.py` |
 | Token / cost budget | `tools.py`, before returning a payload | `cost_tracker.py` |
 | Per-agent iteration cap | agent loop | `agents/base.py` |
-| Rate limiting | MCP boundary only | `rate_limit.py` |
+| Rate limiting | MCP boundary (per session + address), HTTP tool endpoints and `/agent/*` (per client address; shared across instances in Firestore when enabled) | `rate_limit.py`, `rate_limit_firestore.py` |
 | Audit logging | every `call_tool` | `audit_log.py` |
 
 ## Evaluation
