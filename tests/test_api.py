@@ -207,3 +207,29 @@ def test_requests_emit_one_structured_json_log_line(client):
     assert entry["path"] == "/search"
     assert entry["status_code"] == 200
     assert isinstance(entry["duration_ms"], (int, float))
+
+
+def test_tool_endpoints_share_one_per_client_rate_limit(monkeypatch):
+    """The public API can't be looped to burn through the FRED key: the four
+    tool endpoints draw from one bucket per client address."""
+    from fastapi.testclient import TestClient
+
+    import rate_limit
+    from app import main
+
+    monkeypatch.setattr(main, "_tool_limiter", rate_limit.RateLimiter(3, 0.0))
+    c = TestClient(main.app)
+    body = {"series_id": "UNRATE", "start_date": "2020-01-01", "end_date": "2021-01-01"}
+    codes = [
+        c.post("/observations", json=body).status_code,
+        c.get("/metadata/UNRATE").status_code,
+        c.post("/search", json={"search_text": "unemployment"}).status_code,
+        c.post("/observations", json=body).status_code,
+    ]
+    assert codes == [200, 200, 200, 429]
+    r = c.get("/metadata/GDP")
+    assert r.json()["detail"]["error"] == "rate_limited" and int(r.headers["Retry-After"]) >= 1
+    # Another client (address) has its own bucket; /health isn't limited.
+    other = TestClient(main.app, headers={"x-forwarded-for": "198.51.100.9"})
+    assert other.get("/metadata/UNRATE").status_code == 200
+    assert c.get("/health").status_code == 200

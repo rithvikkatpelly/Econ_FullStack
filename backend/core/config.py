@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     google_cloud_location: str = ""
     # Abuse/spend controls on the agent endpoints only. A live run is several
     # model calls, so these are far tighter than the per-tool limits.
+    # The tool endpoints (/search, /observations, /compare, /metadata), per
+    # client address, together. The landing page uses ~7 calls on a first visit.
+    api_rate_limit_per_min: float = 60
+    api_rate_limit_burst: float = 20
     agent_rate_limit_per_min: float = 6
     agent_rate_limit_burst: float = 3
     agent_max_concurrent_runs: int = 2

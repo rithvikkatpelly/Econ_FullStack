@@ -32,4 +32,9 @@ def _hermetic(tmp_path, monkeypatch):
     rate_limit.limiter.reset()
     cost_tracker.reset_budget()
     agent_model.reset_overload_state()
+    # The HTTP API's limiters, if the app has been imported by now.
+    import sys
+
+    if (main := sys.modules.get("app.main")) is not None:
+        main._tool_limiter.reset()
     yield

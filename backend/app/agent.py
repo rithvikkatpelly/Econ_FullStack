@@ -78,14 +78,19 @@ logger = logging.getLogger("econ_data_api")
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
-def _make_limiter():
-    burst = settings.agent_rate_limit_burst
-    per_sec = settings.agent_rate_limit_per_min / 60.0
+def make_limiter(per_min: float, burst: float):
+    """A per-client token bucket in process memory, or in Firestore (shared by
+    every instance) when RATE_LIMIT_BACKEND=firestore."""
+    per_sec = per_min / 60.0
     if settings.rate_limit_backend.strip().lower() == "firestore":
         from rate_limit_firestore import FirestoreRateLimiter
 
         return FirestoreRateLimiter(capacity=burst, refill_per_sec=per_sec)
     return RateLimiter(capacity=burst, refill_per_sec=per_sec)
+
+
+def _make_limiter():
+    return make_limiter(settings.agent_rate_limit_per_min, settings.agent_rate_limit_burst)
 
 
 _limiter = _make_limiter()
@@ -128,7 +133,7 @@ def backend_name() -> str:
     return os.environ.get("AGENT_BACKEND", "stub").strip().lower() or "stub"
 
 
-def _client_id(request: Request) -> str:
+def client_id(request: Request) -> str:
     # Cloud Run's front end appends the caller's address to X-Forwarded-For;
     # the first hop is the original client.
     forwarded = request.headers.get("x-forwarded-for", "")
@@ -140,7 +145,7 @@ def _client_id(request: Request) -> str:
 def _admit(request: Request) -> None:
     """Rate-limit then reserve a run slot, or raise. The caller must release
     the slot (``_slots.release()``) once the run is finished."""
-    allowed, retry_after = _limiter.check(_client_id(request))
+    allowed, retry_after = _limiter.check(client_id(request))
     if not allowed:
         raise HTTPException(
             status_code=429,

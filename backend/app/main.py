@@ -26,7 +26,7 @@ import os
 import sys
 import time
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import fred_client
@@ -157,6 +157,30 @@ def _unwrap(result: dict) -> dict:
 # --- Endpoints — one per MCP tool ---------------------------------------
 
 
+# One per-client limit across the tool endpoints, so the public API can't be
+# looped to burn through the FRED key's quota.
+_tool_limiter = agent.make_limiter(settings.api_rate_limit_per_min, settings.api_rate_limit_burst)
+
+
+def _tool_rate_limit(request: Request) -> None:
+    allowed, retry_after = _tool_limiter.check(f"tools:{agent.client_id(request)}")
+    if not allowed:
+        # A bucket that never refills reports an infinite wait; cap the header.
+        wait = max(1, round(min(retry_after, 60.0)))
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "rate_limited",
+                "detail": "Too many data requests from this client.",
+                "suggestion": f"Try again in {wait} seconds.",
+            },
+            headers={"Retry-After": str(wait)},
+        )
+
+
+_RATE_LIMITED = [Depends(_tool_rate_limit)]
+
+
 @app.get("/health", tags=["meta"])
 def health() -> dict:
     """Liveness/startup probe target (see .github/workflows/deploy.yml's
@@ -190,14 +214,14 @@ def health() -> dict:
     }
 
 
-@app.post("/search", response_model=SearchResponse, tags=["tools"])
+@app.post("/search", response_model=SearchResponse, tags=["tools"], dependencies=_RATE_LIMITED)
 def search(req: SearchRequest) -> dict:
     """`search_series` — plain-language concept → candidate series IDs. Never
     returns observations."""
     return _unwrap(tools.search_series(req.search_text))
 
 
-@app.post("/observations", tags=["tools"])
+@app.post("/observations", tags=["tools"], dependencies=_RATE_LIMITED)
 def observations(req: ObservationsRequest) -> dict:
     """`get_series_observations` — one series over a required date range.
     Returns ``{"series_id", "observations": [{"date","value"}], "_cost"}``.
@@ -210,7 +234,7 @@ def observations(req: ObservationsRequest) -> dict:
     )
 
 
-@app.post("/compare", tags=["tools"])
+@app.post("/compare", tags=["tools"], dependencies=_RATE_LIMITED)
 def compare(req: CompareRequest) -> dict:
     """`compare_series` — 2–4 series aligned over one date range. Returns
     ``{"series": {series_id: [{"date","value"}]}, "_cost"}``."""
@@ -221,7 +245,10 @@ def compare(req: CompareRequest) -> dict:
     )
 
 
-@app.get("/metadata/{series_id}", response_model=MetadataResponse, tags=["tools"])
+@app.get(
+    "/metadata/{series_id}", response_model=MetadataResponse, tags=["tools"],
+    dependencies=_RATE_LIMITED,
+)
 def metadata(series_id: str) -> dict:
     """`get_series_metadata` — units, frequency, last-updated, source notes.
     ``notes`` comes back wrapped as untrusted data (never an instruction)."""
